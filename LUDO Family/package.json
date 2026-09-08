@@ -1,0 +1,30 @@
+{
+  "name": "ludo-family",
+  "version": "1.0.0",
+  "description": "LUDO Family - Juego de Ludo multijugador en red",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "nodemon server/index.js",
+    "online": "bash start-online.sh",
+    "stop:online": "bash stop-online.sh"
+  },
+  "keywords": [
+    "ludo",
+    "game",
+    "multiplayer"
+  ],
+  "author": "Arena.ai",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.22.2",
+    "socket.io": "^4.8.3",
+    "uuid": "^10.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <meta name="theme-color" content="#c4a574" />
+  <meta name="description" content="LUDO Family — Ludo multijugador online. Jugá con amigos desde cualquier dispositivo." />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="LUDO Family" />
+  <title>LUDO Family</title>
+  <link rel="stylesheet" href="/styles.css?v=41" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;700;800;900&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <div id="app">
+    <!-- HOME / LOBBY -->
+    <section id="screen-home" class="screen active">
+      <div id="public-play-banner" class="public-play-banner" hidden>
+        <div class="public-play-banner-title">🌐 Enlace para jugar desde cualquier celular</div>
+        <input id="public-play-url" class="invite-link-input" type="text" readonly value="" />
+        <div class="public-play-banner-actions">
+          <button type="button" id="btn-copy-public-url" class="btn btn-primary btn-sm">📋 Copiar enlace base</button>
+          <span class="public-play-banner-note">Abrí este link en el celular (no el de Arena). Después creá o uníte a una sala.</span>
+        </div>
+      </div>
+      <div class="home-bg">
+        <div class="home-card">
+          <div class="logo">
+            <div class="logo-board">
+              <span class="lq g"></span><span class="lq r"></span>
+              <span class="lq y"></span><span class="lq b"></span>
+            </div>
+            <h1>LUDO <span class="brand-family">Family</span></h1>
+            <p class="tagline">Jugá en red · hasta 4 jugadores</p>
+          </div>
+
+          <div class="home-form">
+            <label for="player-name">Tu nombre</label>
+            <input id="player-name" type="text" maxlength="12" placeholder="Ej: Mary" autocomplete="off" />
+
+            <div class="home-actions">
+              <button id="btn-solo" class="btn btn-primary btn-lg">
+                ⚡ Jugar solo vs bots
+              </button>
+              <button id="btn-create" class="btn btn-secondary">
+                <span class="btn-icon">🎮</span> Crear sala online
+              </button>
+              <div class="divider"><span>o unirse</span></div>
+              <div class="join-row">
+                <input id="join-code" type="text" maxlength="5" placeholder="CÓDIGO" autocomplete="off" class="code-input" />
+                <button id="btn-join" class="btn btn-ghost">Unirse</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="home-online-guide">
+          <p class="home-hint"><strong>Jugar online (cualquier celular o PC)</strong></p>
+          <ol class="home-steps">
+            <li>Todos abren el <strong>mismo enlace público</strong> (banner azul de arriba, no el de Arena).</li>
+            <li>Uno toca <strong>Crear sala online</strong> y elige nombre + color.</li>
+            <li>Comparte <strong>Copiar invitación</strong> o el código de 5 letras.</li>
+            <li>Los demás tocan <strong>Unirse</strong> con el código o el enlace con <code>?room=</code>.</li>
+          </ol>
+        </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- LOBBY ROOM -->
+    <section id="screen-lobby" class="screen">
+      <div class="lobby-wrap">
+        <header class="lobby-header">
+          <h2>Sala <span id="lobby-code" class="code-badge" title="Tocá para copiar el código">-----</span></h2>
+          <div class="lobby-invite-actions">
+            <button id="btn-copy-code" class="btn btn-primary btn-sm" type="button" title="Copiar código y enlace">📋 Copiar invitación</button>
+            <button id="btn-share-code" class="btn btn-ghost btn-sm" type="button" title="Compartir">📤 Compartir</button>
+          </div>
+        </header>
+
+        <div class="invite-box" id="invite-box" hidden>
+          <div class="invite-box-label">Enlace para amigos (tocá para seleccionar)</div>
+          <input id="invite-link-input" class="invite-link-input" type="text" readonly value="" aria-label="Enlace de la sala" />
+          <div class="invite-box-row">
+            <span class="invite-code-pill">Código: <strong id="invite-code-text">-----</strong></span>
+            <button id="btn-copy-link-only" class="btn btn-ghost btn-xs" type="button">Copiar solo enlace</button>
+            <button id="btn-copy-code-only" class="btn btn-ghost btn-xs" type="button">Copiar solo código</button>
+          </div>
+          <p class="invite-box-hint">Si el portapapeles está bloqueado, seleccioná el enlace de arriba y copiá con Ctrl+C / mantener pulsado.</p>
+        </div>
+
+        <div class="lobby-steps" id="lobby-steps">
+          <div class="step" data-step="1"><span class="step-num">1</span> Creá la sala</div>
+          <div class="step" data-step="2"><span class="step-num">2</span> Sumá rivales</div>
+          <div class="step" data-step="3"><span class="step-num">3</span> Iniciá</div>
+        </div>
+
+        <div class="lobby-players" id="lobby-players"></div>
+
+        <div class="lobby-controls">
+          <button id="btn-quick-start" class="btn btn-primary btn-lg">
+            ⚡ Jugar ahora (con 3 bots)
+          </button>
+          <div class="lobby-or">o armá la sala a mano</div>
+          <button id="btn-add-bot" class="btn btn-ghost">+ Agregar 1 bot</button>
+          <button id="btn-start" class="btn btn-secondary" disabled>Iniciar partida</button>
+          <button id="btn-leave-lobby" class="btn btn-danger-ghost">Salir</button>
+        </div>
+        <p class="lobby-note" id="lobby-note">Para empezar solo: tocá “Jugar ahora”.</p>
+      </div>
+    </section>
+
+    <!-- GAME -->
+    <section id="screen-game" class="screen">
+      <div class="game-shell">
+        <header class="game-topbar">
+          <div class="topbar-left">
+            <span class="brand-mini">LUDO <span class="brand-family">Family</span></span>
+            <span class="room-mini" id="game-code"></span>
+          </div>
+          <div class="topbar-right">
+            <button id="btn-chat-toggle" class="icon-btn" title="Chat">💬</button>
+            <button id="btn-pause-menu" class="icon-btn" title="Menú">⏸</button>
+          </div>
+        </header>
+
+        <!--
+          Dice beside each quadrant (left / right of the board):
+            [ green ]  +------+  [ red ]
+                       |BOARD |
+            [ yellow]  +------+  [ blue ]
+        -->
+        <div class="arena" id="arena">
+          <div class="side-col side-left">
+            <div class="corner-dice corner-green" id="station-green"></div>
+            <div class="corner-dice corner-yellow" id="station-yellow"></div>
+          </div>
+
+          <div class="board-wrap">
+            <div class="board" id="board" aria-label="Tablero de Ludo"></div>
+          </div>
+
+          <div class="side-col side-right">
+            <div class="corner-dice corner-red" id="station-red"></div>
+            <div class="corner-dice corner-blue" id="station-blue"></div>
+          </div>
+        </div>
+
+        <div class="sound-panel" id="sound-panel" title="Efectos de sonido">
+          <span class="sound-panel-label">🔊 Sonido</span>
+          <label class="sound-toggle" for="sfx-dice">
+            <input type="checkbox" id="sfx-dice" checked />
+            <span class="sound-toggle-ui" aria-hidden="true"></span>
+            <span class="sound-toggle-text">Dado</span>
+          </label>
+          <label class="sound-toggle" for="sfx-tokens">
+            <input type="checkbox" id="sfx-tokens" checked />
+            <span class="sound-toggle-ui" aria-hidden="true"></span>
+            <span class="sound-toggle-text">Fichas</span>
+          </label>
+        </div>
+
+        <div class="game-message" id="game-message">Preparando...</div>
+        <p class="hint-line" id="hint-line"></p>
+      </div>
+
+      <!-- Chat panel -->
+      <aside id="chat-panel" class="chat-panel">
+        <div class="chat-header">
+          <strong>Chat</strong>
+          <button id="btn-chat-close" class="icon-btn">✕</button>
+        </div>
+        <div class="chat-messages" id="chat-messages"></div>
+        <form id="chat-form" class="chat-form">
+          <input id="chat-input" type="text" maxlength="200" placeholder="Escribí un mensaje..." autocomplete="off" />
+          <button type="submit" class="btn btn-sm btn-primary">Enviar</button>
+        </form>
+      </aside>
+
+      <!-- Pause / menu overlay -->
+      <div id="menu-overlay" class="overlay hidden">
+        <div class="overlay-card">
+          <h3>Menú</h3>
+          <button id="btn-resume" class="btn btn-primary">Continuar</button>
+          <button id="btn-leave-game" class="btn btn-danger">Abandonar partida</button>
+        </div>
+      </div>
+
+      <!-- Winner overlay -->
+      <div id="winner-overlay" class="overlay hidden">
+        <div class="overlay-card winner-card">
+          <div class="trophy">🏆</div>
+          <h3 id="winner-title">¡Ganador!</h3>
+          <p id="winner-sub"></p>
+          <button id="btn-back-home" class="btn btn-primary">Volver al inicio</button>
+        </div>
+      </div>
+    </section>
+
+    <div id="toast" class="toast hidden"></div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/board.js?v=41"></script>
+  <script src="/app.js?v=41"></script>
+</body>
+</html>

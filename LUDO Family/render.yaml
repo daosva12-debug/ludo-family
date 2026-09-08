@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: ludo-family
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server/index.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: "0.0.0.0"
+      # After first deploy, set PUBLIC_BASE_URL to https://your-service.onrender.com
+      - key: PUBLIC_BASE_URL
+        sync: false
