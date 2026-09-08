@@ -40,16 +40,40 @@ const SAFE_CELLS = new Set([
 
 function createInitialState(players) {
   // players: array of { id, name, color, isBot? }
-  const state = {
-    players: players.map((p, i) => ({
+  // Normalize colors, then sort clockwise on the board:
+  // green (top-left) → red (top-right) → blue (bottom-right) → yellow (bottom-left)
+  const normalized = players.map((p, i) => {
+    const color = (p.color && COLOR_ORDER.includes(p.color))
+      ? p.color
+      : COLOR_ORDER[i % COLOR_ORDER.length];
+    return {
       id: p.id,
       name: p.name,
-      color: p.color || COLOR_ORDER[i],
+      color,
       isBot: !!p.isBot,
+      autoPlay: !!p.autoPlay,
       tokens: Array(TOKENS_PER_PLAYER).fill(-1), // all in yard
-      finished: 0
-    })),
-    currentPlayerIndex: 0,
+      finished: 0,
+      // tokenIndex values in arrival order at meta (for triangle placement)
+      finishOrder: []
+    };
+  });
+
+  normalized.sort((a, b) => {
+    const ia = COLOR_ORDER.indexOf(a.color);
+    const ib = COLOR_ORDER.indexOf(b.color);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+  });
+
+  // Random first player (not always the same seat)
+  const startIndex = normalized.length
+    ? Math.floor(Math.random() * normalized.length)
+    : 0;
+  const starter = normalized[startIndex];
+
+  const state = {
+    players: normalized,
+    currentPlayerIndex: startIndex,
     diceValue: null,
     diceRolled: false,
     consecutiveSixes: 0,
@@ -59,9 +83,16 @@ function createInitialState(players) {
     lastMove: null,
     mustRollAgain: false,
     selectableTokens: [],
-    message: ''
+    message: starter
+      ? `Empieza ${starter.name} (${colorLabel(starter.color)}). Turnos en sentido horario.`
+      : ''
   };
   return state;
+}
+
+/** Spanish color name for messages */
+function colorLabel(color) {
+  return ({ green: 'verde', red: 'rojo', blue: 'azul', yellow: 'amarillo' })[color] || color;
 }
 
 function getPlayer(state, playerId) {
@@ -280,7 +311,11 @@ function moveToken(state, playerId, tokenIndex) {
 
   if (newPos === FINISH) {
     finishedToken = true;
-    player.finished += 1;
+    if (!Array.isArray(player.finishOrder)) player.finishOrder = [];
+    if (!player.finishOrder.includes(tokenIndex)) {
+      player.finishOrder.push(tokenIndex);
+    }
+    player.finished = player.finishOrder.length;
   }
 
   state.lastMove = {
@@ -294,25 +329,43 @@ function moveToken(state, playerId, tokenIndex) {
     finishedToken
   };
 
-  // Check win — first player to get all 4 tokens home wins
-  if (player.finished >= TOKENS_PER_PLAYER) {
+  // Ranking: first to finish all 4 is 1st place, but game continues until EVERYONE finishes
+  const playerFullyDone = player.finished >= TOKENS_PER_PLAYER;
+  if (playerFullyDone) {
     if (!state.winners.includes(playerId)) {
       state.winners.push(playerId);
     }
-    state.message = `¡${player.name} ha ganado!`;
-    state.status = 'finished';
-    state.winner = state.winners[0];
-  }
+    const place = state.winners.indexOf(playerId) + 1;
+    const placeLabel = place === 1 ? '1º (medalla de oro)' : place === 2 ? '2º' : place === 3 ? '3º' : `${place}º`;
+    state.message = `¡${player.name} completó la meta — ${placeLabel}!`;
 
-  const gotExtraTurn = dice === 6 || captured || finishedToken;
+    const allDone = state.players.every((p) => p.finished >= TOKENS_PER_PLAYER);
+    if (allDone) {
+      state.status = 'finished';
+      state.winner = state.winners[0] || playerId;
+      const first = getPlayer(state, state.winner);
+      state.message = first
+        ? `¡Fin de la partida! 1º lugar: ${first.name}`
+        : '¡Fin de la partida!';
+    }
+  }
 
   state.diceRolled = false;
   state.diceValue = null;
   state.selectableTokens = [];
 
   if (state.status === 'finished') {
-    return { ok: true, captured, finishedToken, extraTurn: false, state: publicState(state) };
+    return { ok: true, captured, finishedToken, extraTurn: false, placed: playerFullyDone, state: publicState(state) };
   }
+
+  // Player who already finished all 4 tokens does not keep the turn
+  if (playerFullyDone) {
+    state.consecutiveSixes = 0;
+    advanceTurn(state);
+    return { ok: true, captured, finishedToken, extraTurn: false, placed: true, state: publicState(state) };
+  }
+
+  const gotExtraTurn = dice === 6 || captured || finishedToken;
 
   if (gotExtraTurn) {
     // Keep turn, must roll again
@@ -335,6 +388,12 @@ function moveToken(state, playerId, tokenIndex) {
 function advanceTurn(state) {
   if (state.status !== 'playing') return;
   const n = state.players.length;
+  // If everyone finished, close the match
+  if (n > 0 && state.players.every((p) => p.finished >= TOKENS_PER_PLAYER)) {
+    state.status = 'finished';
+    if (!state.winner && state.winners.length) state.winner = state.winners[0];
+    return;
+  }
   let next = (state.currentPlayerIndex + 1) % n;
   let guard = 0;
   // Skip players who already finished all tokens
@@ -342,13 +401,19 @@ function advanceTurn(state) {
     next = (next + 1) % n;
     guard++;
   }
+  // Safety: if looped all finished, end game
+  if (state.players[next].finished >= TOKENS_PER_PLAYER) {
+    state.status = 'finished';
+    if (!state.winner && state.winners.length) state.winner = state.winners[0];
+    return;
+  }
   state.currentPlayerIndex = next;
   state.diceRolled = false;
   state.diceValue = null;
   state.consecutiveSixes = 0;
   state.selectableTokens = [];
   const p = state.players[next];
-  state.message = `Turno de ${p.name}`;
+  state.message = `Turno de ${p.name} (${colorLabel(p.color)})`;
 }
 
 function publicState(state) {

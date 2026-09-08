@@ -163,7 +163,10 @@ function roomPublic(room) {
       id: p.id,
       name: p.name,
       color: p.color,
-      isBot: p.isBot,
+      isBot: !!p.isBot,
+      autoPlay: !!p.autoPlay,
+      wasHuman: p.wasHuman !== false && !p.permanentBot,
+      permanentBot: !!p.permanentBot,
       connected: p.connected,
       isLocal: !!p.isLocal
     })),
@@ -272,6 +275,57 @@ function runBotTurn(room) {
     ...moveResult
   });
   scheduleBot(room);
+}
+
+
+/** Toggle auto-play (bot drives dice + moves) for a human seat; reversible. */
+function setSeatAutoPlay(room, playerId, enabled) {
+  const rp = room.players.find((p) => p.id === playerId);
+  if (!rp) return { ok: false, error: 'Jugador no encontrado' };
+  if (rp.permanentBot) {
+    return { ok: false, error: 'Ese asiento es un bot fijo' };
+  }
+  // Only human-origin seats (or currently autoPlay)
+  if (rp.isBot && !rp.autoPlay && rp.wasHuman === false) {
+    return { ok: false, error: 'No se puede controlar ese bot' };
+  }
+  const on = !!enabled;
+  rp.wasHuman = true;
+  rp.autoPlay = on;
+  rp.isBot = on;
+  rp.permanentBot = false;
+  // Keep display name clean
+  if (on) {
+    if (!/\(auto\)/i.test(rp.name)) {
+      rp.name = String(rp.name || 'Jugador').replace(/\s*\((auto|bot)\)\s*$/i, '').trim() + ' (auto)';
+    }
+  } else {
+    rp.name = String(rp.name || 'Jugador').replace(/\s*\((auto|bot)\)\s*$/i, '').trim() || 'Jugador';
+  }
+  if (room.game && Array.isArray(room.game.players)) {
+    const gp = room.game.players.find((p) => p.id === playerId);
+    if (gp) {
+      gp.isBot = on;
+      gp.autoPlay = on;
+      gp.name = rp.name;
+    }
+  }
+  return { ok: true, autoPlay: on, playerId };
+}
+
+function canToggleAutoPlay(socket, room, targetPlayerId) {
+  if (!room || !targetPlayerId) return false;
+  const actor = getActorId(socket, room);
+  const target = room.players.find((p) => p.id === targetPlayerId);
+  if (!target || target.permanentBot) return false;
+  if (target.isBot && !target.autoPlay && target.wasHuman === false) return false;
+  // Own seat
+  if (targetPlayerId === actor) return true;
+  // Hotseat / same-PC controller can toggle any human seat
+  if (room.hotseat && isRoomController(socket, room)) return true;
+  // Local seats owned by this controller
+  if (target.isLocal && isRoomController(socket, room)) return true;
+  return false;
 }
 
 /** Return first color in COLOR_ORDER not used by other players. */
@@ -431,6 +485,9 @@ io.on('connection', (socket) => {
         name: String(name || (hotseat ? 'Jugador 1' : 'Jugador')).trim().slice(0, 12) || 'Jugador',
         color: COLOR_ORDER[0],
         isBot: false,
+        wasHuman: true,
+        autoPlay: false,
+        permanentBot: false,
         connected: true,
         isLocal: hotseat
       };
@@ -512,6 +569,9 @@ io.on('connection', (socket) => {
         name: String(name || 'Jugador').trim().slice(0, 12) || 'Jugador',
         color: firstFreeColor(room.players, null),
         isBot: false,
+        wasHuman: true,
+        autoPlay: false,
+        permanentBot: false,
         connected: true
       };
       room.players.push(player);
@@ -544,6 +604,9 @@ io.on('connection', (socket) => {
       name,
       color: firstFreeColor(room.players, null),
       isBot: true,
+      permanentBot: true,
+      wasHuman: false,
+      autoPlay: false,
       connected: true
     });
     ensureColors(room.players);
@@ -604,6 +667,9 @@ io.on('connection', (socket) => {
       name,
       color,
       isBot: false,
+        wasHuman: true,
+        autoPlay: false,
+        permanentBot: false,
       connected: true,
       isLocal: true
     });
@@ -702,7 +768,7 @@ io.on('connection', (socket) => {
     try {
       ensureColors(room.players);
       room.game = createInitialState(room.players);
-      room.game.message = `Turno de ${room.game.players[0].name}`;
+      // keep random starter message from createInitialState
       room.status = 'playing';
       const pub = roomPublic(room);
       emitRoom(room);
@@ -738,6 +804,9 @@ io.on('connection', (socket) => {
           name,
           color: COLOR_ORDER[room.players.length % 4],
           isBot: true,
+          permanentBot: true,
+          wasHuman: false,
+          autoPlay: false,
           connected: true
         });
       }
@@ -750,7 +819,7 @@ io.on('connection', (socket) => {
       }
 
       room.game = createInitialState(room.players);
-      room.game.message = `Turno de ${room.game.players[0].name}`;
+      // keep random starter message from createInitialState
       room.status = 'playing';
       const pub = roomPublic(room);
       emitRoom(room);
@@ -760,6 +829,46 @@ io.on('connection', (socket) => {
     } catch (e) {
       console.error('quickStart error', e);
       if (typeof cb === 'function') cb({ ok: false, error: e.message || 'Error al iniciar' });
+    }
+  });
+
+  
+  socket.on('player:autoplay', (payload, cb) => {
+    if (typeof payload === 'function') { cb = payload; payload = {}; }
+    payload = payload || {};
+    try {
+      const room = rooms.get(currentRoomId);
+      if (!room) return typeof cb === 'function' && cb({ ok: false, error: 'Sin sala' });
+      if (room.status !== 'playing' || !room.game) {
+        return typeof cb === 'function' && cb({ ok: false, error: 'Solo durante la partida' });
+      }
+      const targetId = payload.playerId || payload.asPlayerId;
+      if (!targetId) return typeof cb === 'function' && cb({ ok: false, error: 'Falta jugador' });
+      if (!canToggleAutoPlay(socket, room, targetId)) {
+        return typeof cb === 'function' && cb({ ok: false, error: 'No podés cambiar el auto-juego de ese jugador' });
+      }
+      const enabled = payload.enabled == null ? true : !!payload.enabled;
+      // If payload.toggle, flip
+      const target = room.players.find((p) => p.id === targetId);
+      const turnOn = payload.toggle ? !(target && target.autoPlay) : enabled;
+      const result = setSeatAutoPlay(room, targetId, turnOn);
+      if (!result.ok) return typeof cb === 'function' && cb(result);
+      emitRoom(room);
+      io.to(room.id).emit('game:event', {
+        type: 'autoplay',
+        playerId: targetId,
+        autoPlay: turnOn
+      });
+      if (typeof cb === 'function') cb({ ok: true, autoPlay: turnOn, playerId: targetId });
+      if (turnOn) scheduleBot(room);
+      else {
+        // Stopping auto: clear pending bot action for this seat
+        clearBotTimer(room);
+        scheduleBot(room); // in case another bot is current
+      }
+    } catch (e) {
+      console.error('autoplay error', e);
+      if (typeof cb === 'function') cb({ ok: false, error: e.message || 'Error' });
     }
   });
 
@@ -880,7 +989,15 @@ io.on('connection', (socket) => {
         // In-game: AI takes over until they rejoin
         p.connected = false;
         p.socketId = null;
+        // AFK / disconnect → temporary bot (reclaimable = auto-play seat)
         p.isBot = true;
+        p.autoPlay = true;
+        p.wasHuman = true;
+        p.permanentBot = false;
+        if (room.game && Array.isArray(room.game.players)) {
+          const gp = room.game.players.find((x) => x.id === p.id);
+          if (gp) { gp.isBot = true; gp.autoPlay = true; gp.name = p.name; }
+        }
         const base = String(p.name || 'Jugador').replace(/\s*\(bot\)?$/i, '').trim() || 'Jugador';
         if (!/\(bot\)$/i.test(p.name || '')) p.name = base + ' (bot)';
         if (room.hostId === p.id) {
