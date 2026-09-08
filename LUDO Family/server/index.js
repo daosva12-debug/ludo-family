@@ -157,12 +157,15 @@ function roomPublic(room) {
     hostId: room.hostId,
     status: room.status,
     maxPlayers: room.maxPlayers,
+    hotseat: !!room.hotseat,
+    localControllerId: room.localControllerId || null,
     players: room.players.map(p => ({
       id: p.id,
       name: p.name,
       color: p.color,
       isBot: p.isBot,
-      connected: p.connected
+      connected: p.connected,
+      isLocal: !!p.isLocal
     })),
     game: room.game ? publicState(room.game) : null
   };
@@ -322,6 +325,39 @@ function getActorId(socket, room) {
   return socket.id;
 }
 
+/** Who is allowed to roll/move on this socket (hotseat: controller plays every human seat) */
+function resolveGameActor(socket, room, preferredId) {
+  if (!room) return null;
+  const controller = getActorId(socket, room);
+  const isController =
+    room.localControllerId === controller ||
+    room.hostId === controller ||
+    (socket.data && socket.data.clientId && socket.data.clientId === room.localControllerId);
+
+  // Hotseat / same-PC: one browser controls all non-bot seats
+  if (room.hotseat && isController && room.game) {
+    const cur = room.game.players[room.game.currentPlayerIndex];
+    if (cur && !cur.isBot) return cur.id;
+    // fallback preferred local seat
+    if (preferredId && room.players.some((p) => p.id === preferredId && !p.isBot)) {
+      return preferredId;
+    }
+  }
+
+  // Optional preferred seat if this socket owns it (or is hotseat controller)
+  if (preferredId && room.players.some((p) => p.id === preferredId && !p.isBot)) {
+    if (preferredId === controller) return preferredId;
+    if (room.hotseat && isController) return preferredId;
+  }
+  return controller;
+}
+
+function isRoomController(socket, room) {
+  if (!room) return false;
+  const id = getActorId(socket, room);
+  return id === room.hostId || id === room.localControllerId;
+}
+
 io.on('connection', (socket) => {
   let currentRoomId = null;
   let playerId = socket.id;
@@ -388,18 +424,22 @@ io.on('connection', (socket) => {
       const clientId = sanitizeClientId(payload && payload.clientId) || socket.id;
       const code = generateCode();
       const roomId = uuidv4();
+      const hotseat = !!(payload && payload.hotseat);
       const player = {
         id: clientId,
         socketId: socket.id,
-        name: String(name || 'Jugador').trim().slice(0, 12) || 'Jugador',
+        name: String(name || (hotseat ? 'Jugador 1' : 'Jugador')).trim().slice(0, 12) || 'Jugador',
         color: COLOR_ORDER[0],
         isBot: false,
-        connected: true
+        connected: true,
+        isLocal: hotseat
       };
       const room = {
         id: roomId,
         code,
         hostId: clientId,
+        localControllerId: clientId,
+        hotseat,
         players: [player],
         game: null,
         status: 'lobby',
@@ -530,6 +570,88 @@ io.on('connection', (socket) => {
   });
 
   /** Player edits own name and/or house color while in lobby */
+  /** Same-PC / hotseat: add another human seat controlled by this browser */
+  socket.on('room:addLocalPlayer', (payload, cb) => {
+    if (typeof payload === 'function') { cb = payload; payload = {}; }
+    payload = payload || {};
+    const room = rooms.get(currentRoomId);
+    if (!room) return typeof cb === 'function' && cb({ ok: false, error: 'Sin sala' });
+    if (room.status !== 'lobby') return typeof cb === 'function' && cb({ ok: false, error: 'La partida ya empezó' });
+    if (!isRoomController(socket, room)) {
+      return typeof cb === 'function' && cb({ ok: false, error: 'Solo el anfitrión puede sumar jugadores locales' });
+    }
+    if (room.players.length >= 4) return typeof cb === 'function' && cb({ ok: false, error: 'Máximo 4 jugadores' });
+
+    room.hotseat = true;
+    if (!room.localControllerId) room.localControllerId = getActorId(socket, room);
+
+    const nHuman = room.players.filter((p) => !p.isBot).length + 1;
+    const nameRaw = payload.name != null ? String(payload.name) : ('Jugador ' + nHuman);
+    const name = nameRaw.trim().slice(0, 12) || ('Jugador ' + nHuman);
+    let color = payload.color && COLOR_ORDER.includes(String(payload.color).toLowerCase())
+      ? String(payload.color).toLowerCase()
+      : firstFreeColor(room.players, null);
+
+    // If chosen color taken, pick free
+    if (room.players.some((p) => p.color === color)) {
+      color = firstFreeColor(room.players, null);
+    }
+
+    const localId = 'local-' + uuidv4().slice(0, 8);
+    room.players.push({
+      id: localId,
+      socketId: null,
+      name,
+      color,
+      isBot: false,
+      connected: true,
+      isLocal: true
+    });
+    ensureColors(room.players);
+    emitRoom(room);
+    if (typeof cb === 'function') cb({ ok: true, room: roomPublic(room), playerId: localId });
+  });
+
+  /** Edit a local (same-PC) seat name/color in lobby */
+  socket.on('room:updateLocalPlayer', (payload, cb) => {
+    if (typeof payload === 'function') { cb = payload; payload = {}; }
+    payload = payload || {};
+    const room = rooms.get(currentRoomId);
+    if (!room) return typeof cb === 'function' && cb({ ok: false, error: 'Sin sala' });
+    if (room.status !== 'lobby') return typeof cb === 'function' && cb({ ok: false, error: 'La partida ya empezó' });
+    if (!isRoomController(socket, room)) {
+      return typeof cb === 'function' && cb({ ok: false, error: 'Solo el anfitrión' });
+    }
+    const targetId = payload.targetId || payload.playerId;
+    const player = room.players.find((p) => p.id === targetId);
+    if (!player || player.isBot) {
+      return typeof cb === 'function' && cb({ ok: false, error: 'Jugador no encontrado' });
+    }
+    // Only seats in this hotseat / host seat
+    const controller = getActorId(socket, room);
+    const okTarget = player.id === controller || player.isLocal || room.hotseat;
+    if (!okTarget) {
+      return typeof cb === 'function' && cb({ ok: false, error: 'No podés editar ese jugador' });
+    }
+
+    if (typeof payload.name === 'string') {
+      const n = payload.name.trim().slice(0, 12);
+      if (n) player.name = n;
+    }
+    if (typeof payload.color === 'string') {
+      const color = payload.color.toLowerCase();
+      if (!COLOR_ORDER.includes(color)) {
+        return typeof cb === 'function' && cb({ ok: false, error: 'Color inválido' });
+      }
+      const taken = room.players.some((p) => p.id !== player.id && p.color === color);
+      if (taken) return typeof cb === 'function' && cb({ ok: false, error: 'Ese color ya está ocupado' });
+      player.color = color;
+    }
+    ensureColors(room.players);
+    emitRoom(room);
+    if (typeof cb === 'function') cb({ ok: true, room: roomPublic(room) });
+  });
+
   socket.on('room:setProfile', (payload, cb) => {
     if (typeof payload === 'function') { cb = payload; payload = {}; }
     const room = rooms.get(currentRoomId);
@@ -643,9 +765,11 @@ io.on('connection', (socket) => {
 
   socket.on('game:roll', (payload, cb) => {
     if (typeof payload === 'function') { cb = payload; payload = {}; }
+    payload = payload || {};
     const room = rooms.get(currentRoomId);
     if (!room || !room.game) return typeof cb === 'function' && cb({ ok: false, error: 'Sin partida' });
-    const actorId = getActorId(socket, room);
+    const actorId = resolveGameActor(socket, room, payload.asPlayerId || payload.playerId);
+    if (!actorId) return typeof cb === 'function' && cb({ ok: false, error: 'Sin jugador' });
     const result = rollDice(room.game, actorId);
     if (!result.ok) return typeof cb === 'function' && cb(result);
     emitRoom(room);
@@ -668,7 +792,8 @@ io.on('connection', (socket) => {
     const tokenIndex = payload.tokenIndex;
     const room = rooms.get(currentRoomId);
     if (!room || !room.game) return typeof cb === 'function' && cb({ ok: false, error: 'Sin partida' });
-    const actorId = getActorId(socket, room);
+    const actorId = resolveGameActor(socket, room, payload.asPlayerId || payload.playerId);
+    if (!actorId) return typeof cb === 'function' && cb({ ok: false, error: 'Sin jugador' });
     const result = moveToken(room.game, actorId, tokenIndex);
     if (!result.ok) return typeof cb === 'function' && cb(result);
     emitRoom(room);
