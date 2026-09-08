@@ -18,7 +18,9 @@
     playerName: $('#player-name'),
     joinCode: $('#join-code'),
     btnSolo: $('#btn-solo'),
+    btnHotseat: $('#btn-hotseat'),
     btnCreate: $('#btn-create'),
+    btnAddLocal: $('#btn-add-local'),
     btnJoin: $('#btn-join'),
     lobbyCode: $('#lobby-code'),
     lobbyPlayers: $('#lobby-players'),
@@ -55,6 +57,12 @@
     chatMessages: $('#chat-messages'),
     chatForm: $('#chat-form'),
     chatInput: $('#chat-input'),
+    btnTheme: $('#btn-theme'),
+    btnThemeMenu: $('#btn-theme-menu'),
+    btnThemeClose: $('#btn-theme-close'),
+    themePanel: $('#theme-panel'),
+    themeGrid: $('#theme-grid'),
+    btnFullscreen: $('#btn-fullscreen'),
     btnChatToggle: $('#btn-chat-toggle'),
     btnChatClose: $('#btn-chat-close'),
     menuOverlay: $('#menu-overlay'),
@@ -697,7 +705,9 @@
     lastAnimatedRoll: null,
     lastAnimatedMove: null,
     diceValues: {},
-    busy: false
+    busy: false,
+    hotseat: false,
+    lastHotseatTurnId: null
   };
 
   if (state.name && ui.playerName) ui.playerName.value = state.name;
@@ -748,6 +758,34 @@
   }
   function myId() {
     return state.playerId || state.clientId || (typeof socket !== 'undefined' && socket && socket.id) || null;
+  }
+
+  function isHotseatRoom(room) {
+    return !!(room && (room.hotseat || state.hotseat));
+  }
+
+  /** In hotseat, this browser controls every human (non-bot) seat */
+  function controlsPlayer(player, room) {
+    if (!player || player.isBot) return false;
+    const id = myId();
+    if (player.id === id) return true;
+    if (isHotseatRoom(room || state.room)) return true;
+    return false;
+  }
+
+  function showTurnPass(name, color) {
+    let el = document.getElementById('turn-pass-banner');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'turn-pass-banner';
+      el.className = 'turn-pass-banner';
+      document.body.appendChild(el);
+    }
+    const c = color ? (' · ' + colorLabel(color)) : '';
+    el.innerHTML = '🖱️ Pásale el mouse a <strong>' + escapeHtml(name || 'siguiente') + '</strong>' + escapeHtml(c);
+    el.classList.add('show');
+    clearTimeout(showTurnPass._t);
+    showTurnPass._t = setTimeout(() => el.classList.remove('show'), 2800);
   }
 
   // Resolved public base for invites (tunnel / deploy). Filled async on boot.
@@ -1322,6 +1360,8 @@
   socket.on('chat:message', appendChat);
 
   function enterGame(room, announce) {
+    if (room && room.hotseat) state.hotseat = true;
+    state.lastHotseatTurnId = null;
     if (!room) return;
     state.room = room;
     state.diceValues = state.diceValues || {};
@@ -1424,6 +1464,50 @@
   });
 
   // Create lobby only
+
+  // Same-PC / hotseat: 2–4 humans on this device
+  on(ui.btnHotseat, 'click', async () => {
+    if (state.busy) return;
+    state.busy = true;
+    const btn = ui.btnHotseat;
+    const prev = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = 'Preparando…'; }
+    try {
+      if (!(await ensureOnline())) return;
+      const name = getName() || 'Jugador 1';
+      try { localStorage.setItem('ludoName', name); } catch (_) {}
+      const res = await emitAck('room:create', {
+        name,
+        maxPlayers: 4,
+        clientId: state.clientId,
+        hotseat: true
+      }, 8000);
+      if (!res.ok) {
+        toast(res.error || 'No se pudo crear la sala local');
+        return;
+      }
+      state.playerId = res.playerId || state.clientId;
+      state.hotseat = true;
+      state.room = res.room;
+      if (res.room) saveSession(res.room, state.playerId);
+      // Add a second local seat by default so they can start with 2
+      const add = await emitAck('room:addLocalPlayer', { name: 'Jugador 2' }, 5000);
+      if (add && add.ok && add.room) state.room = add.room;
+      showScreen('lobby');
+      renderLobby();
+      toast('Modo misma PC: sumá jugadores y elegí colores');
+    } catch (e) {
+      console.error(e);
+      toast('Error: ' + (e.message || e));
+    } finally {
+      state.busy = false;
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = prev || '🏠 Misma PC · 2–4 jugadores';
+      }
+    }
+  });
+
   on(ui.btnCreate, 'click', async () => {
     if (state.busy) return;
     state.busy = true;
@@ -1469,10 +1553,36 @@
     const room = state.room;
     if (!room) return;
     if (ui.lobbyCode) ui.lobbyCode.textContent = room.code;
+    if (room.hotseat) state.hotseat = true;
     updateInviteUI(room);
+
+    // Hotseat banner
+    let hs = document.getElementById('hotseat-banner');
+    if (isHotseatRoom(room)) {
+      if (!hs && ui.lobbyPlayers && ui.lobbyPlayers.parentNode) {
+        hs = document.createElement('div');
+        hs.id = 'hotseat-banner';
+        hs.className = 'hotseat-banner';
+        ui.lobbyPlayers.parentNode.insertBefore(hs, ui.lobbyPlayers);
+      }
+      if (hs) {
+        hs.hidden = false;
+        hs.innerHTML = '🏠 <strong>Modo misma PC</strong> — Todos juegan en este aparato. Sumá hasta 4, elegí nombre y color, y pasen el turno cuando diga “TU TURNO”.';
+      }
+      // Hide online-only invite noise a bit
+      if (ui.inviteBox) ui.inviteBox.hidden = true;
+      if (ui.btnCopy) ui.btnCopy.style.display = 'none';
+      if (ui.btnShare) ui.btnShare.style.display = 'none';
+    } else if (hs) {
+      hs.hidden = true;
+      if (ui.btnCopy) ui.btnCopy.style.display = '';
+      if (ui.btnShare) ui.btnShare.style.display = '';
+    }
 
     const id = myId();
     const host = isHost(room);
+    const hotseat = isHotseatRoom(room);
+    const canEditAll = host && hotseat;
 
     if (ui.lobbyPlayers) {
       const takenColors = new Set((room.players || []).map((p) => p.color));
@@ -1484,7 +1594,8 @@
           ? '<button type="button" class="kick" data-id="' + p.id + '" title="Quitar">✕</button>'
           : '';
 
-        if (isMe) {
+        const editable = isMe || (canEditAll && !p.isBot);
+        if (editable) {
           const colors = ['green', 'red', 'blue', 'yellow'];
           const swatches = colors.map((c) => {
             const taken = takenColors.has(c) && p.color !== c;
@@ -1497,13 +1608,13 @@
             );
           }).join('');
           return (
-            '<div class="lobby-player me" data-player-id="' + p.id + '">' +
+            '<div class="lobby-player me' + ((p.isLocal || hotseat) ? ' local-seat' : '') + '" data-player-id="' + p.id + '">' +
             '<div class="color-dot" style="background:' + colorHex(p.color) + '"></div>' +
             '<div class="info">' +
             '<div class="name-row">' +
             '<input type="text" class="lobby-name-input" maxlength="12" value="' + escapeHtml(p.name) + '" ' +
             'placeholder="Tu nombre" aria-label="Tu nombre" />' +
-            '<span class="you-tag">vos</span>' +
+            '<span class="you-tag">' + (p.id === id ? 'vos' : (p.isLocal || hotseat ? 'esta PC' : 'vos')) + '</span>' +
             '</div>' +
             '<div class="meta">' +
             (p.id === room.hostId ? 'Anfitrión · ' : '') +
@@ -1534,44 +1645,47 @@
         });
       });
 
-      // Name edit (me)
-      const nameInput = ui.lobbyPlayers.querySelector('.lobby-name-input');
-      if (nameInput) {
-        let nameTimer = null;
-        const commitName = async () => {
-          const n = (nameInput.value || '').trim().slice(0, 12);
-          if (!n) {
-            nameInput.value = state.name || 'Jugador';
-            return;
-          }
-          if (n === state.name) return;
-          state.name = n;
-          try { localStorage.setItem('ludoName', n); } catch (_) {}
-          if (ui.playerName) ui.playerName.value = n;
-          const res = await emitAck('room:setProfile', { name: n }, 5000);
-          if (res && !res.ok) toast(res.error || 'No se pudo cambiar el nombre');
-        };
-        nameInput.addEventListener('change', commitName);
-        nameInput.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter') {
-            e.preventDefault();
-            nameInput.blur();
-          }
-        });
-        nameInput.addEventListener('input', () => {
-          clearTimeout(nameTimer);
-          nameTimer = setTimeout(commitName, 700);
-        });
-      }
-
-      // Color pick (me)
-      ui.lobbyPlayers.querySelectorAll('.color-swatch:not(:disabled)').forEach((btn) => {
-        btn.addEventListener('click', async () => {
-          const color = btn.getAttribute('data-color');
-          if (!color) return;
-          const res = await emitAck('room:setProfile', { color }, 5000);
-          if (res && !res.ok) toast(res.error || 'Color no disponible');
-          // room:update refreshes UI
+      // Name / color edit (self + hotseat seats)
+      ui.lobbyPlayers.querySelectorAll('.lobby-player.me').forEach((card) => {
+        const pid = card.getAttribute('data-player-id');
+        const nameInput = card.querySelector('.lobby-name-input');
+        if (nameInput) {
+          let nameTimer = null;
+          const commitName = async () => {
+            const n = (nameInput.value || '').trim().slice(0, 12);
+            if (!n) return;
+            let res;
+            if (pid === id) {
+              state.name = n;
+              try { localStorage.setItem('ludoName', n); } catch (_) {}
+              if (ui.playerName) ui.playerName.value = n;
+              res = await emitAck('room:setProfile', { name: n }, 5000);
+            } else {
+              res = await emitAck('room:updateLocalPlayer', { targetId: pid, name: n }, 5000);
+            }
+            if (res && !res.ok) toast(res.error || 'No se pudo cambiar el nombre');
+          };
+          nameInput.addEventListener('change', commitName);
+          nameInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); nameInput.blur(); }
+          });
+          nameInput.addEventListener('input', () => {
+            clearTimeout(nameTimer);
+            nameTimer = setTimeout(commitName, 700);
+          });
+        }
+        card.querySelectorAll('.color-swatch:not(:disabled)').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            const color = btn.getAttribute('data-color');
+            if (!color) return;
+            let res;
+            if (pid === id) {
+              res = await emitAck('room:setProfile', { color }, 5000);
+            } else {
+              res = await emitAck('room:updateLocalPlayer', { targetId: pid, color }, 5000);
+            }
+            if (res && !res.ok) toast(res.error || 'Color no disponible');
+          });
         });
       });
     }
@@ -1599,12 +1713,32 @@
 
     const display = showControls ? '' : 'none';
     if (ui.btnQuickStart) {
-      ui.btnQuickStart.style.display = display;
-      ui.btnQuickStart.disabled = false;
-      ui.btnQuickStart.textContent =
-        n >= 4 ? '⚡ Iniciar partida ya' :
-        n === 1 ? '⚡ Jugar ahora (con 3 bots)' :
-        '⚡ Completar con bots e iniciar (' + n + '/4)';
+      if (hotseat) {
+        // Hotseat: prefer manual start; quick-fill bots still available
+        ui.btnQuickStart.style.display = display;
+        ui.btnQuickStart.disabled = false;
+        ui.btnQuickStart.textContent =
+          n >= 4 ? '⚡ Iniciar ya' :
+          '⚡ Completar con bots e iniciar (' + n + '/4)';
+      } else {
+        ui.btnQuickStart.style.display = display;
+        ui.btnQuickStart.disabled = false;
+        ui.btnQuickStart.textContent =
+          n >= 4 ? '⚡ Iniciar partida ya' :
+          n === 1 ? '⚡ Jugar ahora (con 3 bots)' :
+          '⚡ Completar con bots e iniciar (' + n + '/4)';
+      }
+    }
+    if (ui.btnAddLocal) {
+      ui.btnAddLocal.style.display = (showControls && (hotseat || n >= 1)) ? '' : 'none';
+      if (hotseat) ui.btnAddLocal.style.display = display;
+      ui.btnAddLocal.disabled = n >= 4;
+      ui.btnAddLocal.textContent = n >= 4 ? 'Sala llena (4/4)' : ('+ Jugador en esta PC (' + n + '/4)');
+      // Show add-local also when host wants hotseat from online room
+      if (showControls && !hotseat) {
+        ui.btnAddLocal.style.display = display;
+        ui.btnAddLocal.textContent = '+ Jugador en esta PC';
+      }
     }
     if (ui.btnAddBot) {
       ui.btnAddBot.style.display = display;
@@ -1621,13 +1755,40 @@
         ui.lobbyNote.textContent = 'Esperando a que el anfitrión inicie la partida…';
       } else if (n < 2) {
         ui.lobbyNote.classList.add('warn');
-        ui.lobbyNote.innerHTML = '⚠️ Hace falta al menos 2 jugadores.<br>Tocá <strong>Jugar ahora</strong> o <strong>+ Agregar 1 bot</strong>.';
+        if (hotseat) {
+          ui.lobbyNote.innerHTML = '⚠️ Sumá al menos otro jugador con <strong>+ Jugador en esta PC</strong> (o un bot).';
+        } else {
+          ui.lobbyNote.innerHTML = '⚠️ Hace falta al menos 2 jugadores.<br>Tocá <strong>Jugar ahora</strong>, <strong>+ Jugador en esta PC</strong> o <strong>+ Agregar 1 bot</strong>.';
+        }
       } else {
         ui.lobbyNote.classList.add('ready');
-        ui.lobbyNote.innerHTML = '✅ ' + n + ' jugadores. Tocá “Iniciar partida”.<br><span class="invite-hint">Compartí el <strong>enlace</strong> o el código de arriba con tus amigos.</span>';
+        if (hotseat) {
+          ui.lobbyNote.innerHTML = '✅ ' + n + ' jugadores en esta PC. Tocá <strong>Iniciar partida</strong> y pasen el dispositivo en cada turno.';
+        } else {
+          ui.lobbyNote.innerHTML = '✅ ' + n + ' jugadores. Tocá “Iniciar partida”.<br><span class="invite-hint">Compartí el <strong>enlace</strong> o el código, o sumá alguien con <strong>+ Jugador en esta PC</strong>.</span>';
+        }
       }
     }
   }
+
+  on(ui.btnAddLocal, 'click', async () => {
+    if (state.busy) return;
+    state.busy = true;
+    try {
+      if (!(await ensureOnline())) return;
+      const n = ((state.room && state.room.players) || []).length + 1;
+      const res = await emitAck('room:addLocalPlayer', { name: 'Jugador ' + n }, 5000);
+      if (!res.ok) toast(res.error || 'No se pudo sumar jugador');
+      else {
+        state.hotseat = true;
+        if (res.room) state.room = res.room;
+        toast('Jugador local agregado');
+      }
+    } finally {
+      state.busy = false;
+    }
+  });
+
 
   on(ui.btnCopy, 'click', async (e) => {
     if (e) { e.preventDefault(); e.stopPropagation(); }
@@ -1726,6 +1887,8 @@
     socket.emit('room:leave');
     clearSession();
     state.room = null;
+    state.hotseat = false;
+    state.lastHotseatTurnId = null;
     showScreen('home');
   });
 
@@ -1956,28 +2119,41 @@
     if (ui.gameMessage) ui.gameMessage.textContent = g.message || '';
 
     const current = g.players[g.currentPlayerIndex];
-    const isMyTurn = current && current.id === id && !current.isBot;
+    const hotseat = isHotseatRoom(room);
+    const isMyTurn = current && !current.isBot && controlsPlayer(current, room);
     const canRoll = isMyTurn && !g.diceRolled && g.status === 'playing' && !state.rolling && !state.moving;
     const needsChoice = isMyTurn && g.diceRolled && g.selectableTokens && g.selectableTokens.length > 0 && !state.moving;
+
+    // Hotseat: announce when the human turn changes
+    if (hotseat && current && !current.isBot && g.status === 'playing') {
+      if (state.lastHotseatTurnId !== current.id && !state.rolling && !state.moving) {
+        state.lastHotseatTurnId = current.id;
+        showTurnPass(current.name, current.color);
+      }
+    }
 
     if (ui.hintLine) {
       if (state.rolling) ui.hintLine.textContent = 'Tirando el dado…';
       else if (state.moving) ui.hintLine.textContent = 'Moviendo ficha…';
-      else if (canRoll) ui.hintLine.textContent = '👆 Tocá el DADO junto a tu color para tirar';
+      else if (canRoll) {
+        ui.hintLine.textContent = hotseat
+          ? ('👆 Turno de ' + current.name + ' — tocá el DADO de su color')
+          : '👆 Tocá el DADO junto a tu color para tirar';
+      }
       else if (needsChoice) {
-        const me = g.players.find((p) => p.id === id);
+        const actor = current;
         const dice = g.diceValue;
-        const yardSel = me && g.selectableTokens && g.selectableTokens.some((ti) => me.tokens[ti] === -1);
+        const yardSel = actor && g.selectableTokens && g.selectableTokens.some((ti) => actor.tokens[ti] === -1);
         if (dice === 6 && yardSel) {
-          ui.hintLine.textContent = '🏠 Con el 6 podés sacar ficha de la casa — tocá la que late';
+          ui.hintLine.textContent = '🏠 ' + (actor.name || '') + ': con el 6 sacá ficha de la casa — tocá la que late';
         } else {
-          ui.hintLine.textContent = '💓 Tocá la ficha que late para moverla';
+          ui.hintLine.textContent = '💓 ' + (actor && actor.name ? actor.name + ': ' : '') + 'tocá la ficha que late';
         }
       }
       else if (current) {
         ui.hintLine.textContent = current.isBot
           ? (current.name + ' está jugando…')
-          : ('Turno de ' + current.name);
+          : (hotseat ? ('Turno de ' + current.name + ' — pasale el mouse a ' + current.name) : ('Turno de ' + current.name));
       } else ui.hintLine.textContent = '';
     }
 
@@ -1996,11 +2172,17 @@
       window.LudoBoard.renderBoard(ui.board, g, {
         selectableTokens: selectForBoard,
         currentColor: current ? current.color : null,
-        myColor: (g.players.find((p) => p.id === id) || {}).color,
+        myColor: hotseat && current && !current.isBot
+          ? current.color
+          : (g.players.find((p) => p.id === id) || {}).color,
         onTokenClick: (playerId, tokenIndex) => {
-          if (playerId !== id || state.rolling || state.moving) return;
+          if (state.rolling || state.moving) return;
+          const pl = g.players.find((p) => p.id === playerId);
+          if (!controlsPlayer(pl, room)) return;
+          // Only current player pieces
+          if (!current || current.id !== playerId) return;
           DiceSFX.unlock();
-          socket.emit('game:move', { tokenIndex }, (res) => {
+          socket.emit('game:move', { tokenIndex, asPlayerId: playerId }, (res) => {
             if (res && !res.ok) toast(res.error || 'Movimiento inválido');
           });
         }
@@ -2022,7 +2204,7 @@
 
     const current = g.players[g.currentPlayerIndex];
     const isActive = current && current.id === player.id && g.status === 'playing';
-    const isMe = player.id === id;
+    const isMe = controlsPlayer(player, state.room);
     const canRollHere = isActive && isMe && !player.isBot && !g.diceRolled && !state.rolling && !state.moving && g.status === 'playing';
     const hasChoice = isActive && isMe && g.diceRolled && g.selectableTokens && g.selectableTokens.length > 0 && !state.moving;
 
@@ -2152,7 +2334,7 @@
     }
   }
 
-  function onDiceClick(e) {
+    function onDiceClick(e) {
     e.preventDefault();
     e.stopPropagation();
     DiceSFX.unlock();
@@ -2161,13 +2343,17 @@
     if (!room || !room.game) return;
     const g = room.game;
     const current = g.players[g.currentPlayerIndex];
-    if (!current || current.id !== myId() || g.diceRolled) return;
+    if (!current || current.isBot || g.diceRolled) return;
+    if (!controlsPlayer(current, room)) return;
 
     const btn = e.currentTarget;
+    const btnPid = btn && btn.getAttribute('data-player-id');
+    if (btnPid && btnPid !== current.id) return;
+
     btn.classList.remove('can-roll');
     btn.style.pointerEvents = 'none';
 
-    socket.emit('game:roll', (res) => {
+    socket.emit('game:roll', { asPlayerId: current.id }, (res) => {
       if (res && !res.ok) {
         toast(res.error || 'No se pudo tirar');
         state.rolling = false;
@@ -2328,6 +2514,8 @@
     socket.emit('room:leave');
     clearSession();
     state.room = null;
+    state.hotseat = false;
+    state.lastHotseatTurnId = null;
     showScreen('home');
   });
   on(ui.btnBackHome, 'click', () => {
@@ -2335,6 +2523,8 @@
     socket.emit('room:leave');
     clearSession();
     state.room = null;
+    state.hotseat = false;
+    state.lastHotseatTurnId = null;
     showScreen('home');
   });
   on(ui.btnChatToggle, 'click', () => {
@@ -2426,6 +2616,148 @@
     } catch (_) {}
     toast('Código ' + code + ' listo — poné tu nombre y tocá Unirse');
   })();
+
+
+
+  // ---- Wallpaper / board themes ----
+  const THEME_IDS = ['classic', 'pets', 'football', 'cars', 'music', 'boardgames'];
+  const THEME_LABELS = {
+    classic: 'Clásico',
+    pets: 'Mascotas',
+    football: 'Fútbol',
+    cars: 'Autos',
+    music: 'Música',
+    boardgames: 'Juegos de mesa'
+  };
+
+  function getSavedTheme() {
+    try {
+      const t = localStorage.getItem('ludoTheme');
+      if (t && THEME_IDS.indexOf(t) >= 0) return t;
+    } catch (_) {}
+    return 'classic';
+  }
+
+  function applyTheme(themeId, opts) {
+    const id = THEME_IDS.indexOf(themeId) >= 0 ? themeId : 'classic';
+    document.documentElement.setAttribute('data-theme', id);
+    try { localStorage.setItem('ludoTheme', id); } catch (_) {}
+    if (ui.themeGrid) {
+      ui.themeGrid.querySelectorAll('.theme-card').forEach((btn) => {
+        btn.classList.toggle('is-active', btn.getAttribute('data-theme') === id);
+      });
+    }
+    // Re-render board so solid rim picks new CSS vars
+    try {
+      if (state.room && state.room.game) renderGame();
+      else if (window.LudoBoard && ui.board) window.LudoBoard.renderBoard(ui.board, null, {});
+    } catch (_) {}
+    if (opts && opts.toast !== false) {
+      toast('Temática: ' + (THEME_LABELS[id] || id));
+    }
+  }
+
+  function openThemePanel() {
+    if (!ui.themePanel) return;
+    ui.themePanel.classList.remove('hidden');
+    ui.themePanel.setAttribute('aria-hidden', 'false');
+    // close pause menu if open
+    if (ui.menuOverlay) ui.menuOverlay.classList.add('hidden');
+  }
+
+  function closeThemePanel() {
+    if (!ui.themePanel) return;
+    ui.themePanel.classList.add('hidden');
+    ui.themePanel.setAttribute('aria-hidden', 'true');
+  }
+
+  on(ui.btnTheme, 'click', (e) => {
+    if (e) { e.preventDefault(); e.stopPropagation(); }
+    openThemePanel();
+  });
+  on(ui.btnThemeMenu, 'click', (e) => {
+    if (e) { e.preventDefault(); e.stopPropagation(); }
+    openThemePanel();
+  });
+  on(ui.btnThemeClose, 'click', closeThemePanel);
+  on(ui.themePanel, 'click', (e) => {
+    if (e.target === ui.themePanel) closeThemePanel();
+  });
+  if (ui.themeGrid) {
+    ui.themeGrid.querySelectorAll('.theme-card').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-theme');
+        applyTheme(id);
+        closeThemePanel();
+      });
+    });
+  }
+
+  // Apply on boot (no toast)
+  applyTheme(getSavedTheme(), { toast: false });
+
+  // ---- Fullscreen ----
+  function getFsElement() {
+    return document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement || null;
+  }
+
+  function isFullscreen() {
+    return !!getFsElement();
+  }
+
+  function updateFullscreenButton() {
+    const on = isFullscreen() || document.documentElement.classList.contains('is-fullscreen');
+    if (ui.btnFullscreen) {
+      ui.btnFullscreen.classList.toggle('is-active', on);
+      ui.btnFullscreen.title = on ? 'Salir de pantalla completa' : 'Pantalla completa';
+      ui.btnFullscreen.setAttribute('aria-label', ui.btnFullscreen.title);
+      ui.btnFullscreen.textContent = on ? '✕' : '⛶';
+    }
+    document.documentElement.classList.toggle('is-fullscreen', on);
+    // Nudge board reflow after chrome hide/show
+    try {
+      if (state.room && state.room.game) {
+        requestAnimationFrame(() => {
+          try { renderGame(); } catch (_) {}
+        });
+      }
+    } catch (_) {}
+  }
+
+  async function toggleFullscreen() {
+    try {
+      if (isFullscreen()) {
+        const exit = document.exitFullscreen || document.webkitExitFullscreen || document.msExitFullscreen;
+        if (exit) await exit.call(document);
+        document.documentElement.classList.remove('is-fullscreen');
+      } else {
+        const el = document.documentElement;
+        const req = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
+        if (req) {
+          await req.call(el);
+        } else {
+          // iOS Safari often blocks FS — CSS "immersive" fallback
+          document.documentElement.classList.add('is-fullscreen');
+          toast('Modo ampliado (este navegador limita pantalla completa)');
+        }
+      }
+    } catch (e) {
+      // Fallback immersive class if API rejects (iframe / iOS)
+      document.documentElement.classList.toggle('is-fullscreen');
+      if (document.documentElement.classList.contains('is-fullscreen')) {
+        toast('Modo ampliado activado');
+      }
+    }
+    updateFullscreenButton();
+  }
+
+  on(ui.btnFullscreen, 'click', (e) => {
+    if (e) { e.preventDefault(); e.stopPropagation(); }
+    toggleFullscreen();
+  });
+  document.addEventListener('fullscreenchange', updateFullscreenButton);
+  document.addEventListener('webkitfullscreenchange', updateFullscreenButton);
+  document.addEventListener('MSFullscreenChange', updateFullscreenButton);
 
   window.LudoApp = { state, socket, showScreen, renderLobby, renderGame, inviteUrl };
 })();

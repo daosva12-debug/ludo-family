@@ -2,14 +2,14 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <meta name="theme-color" content="#c4a574" />
   <meta name="description" content="LUDO Family — Ludo multijugador online. Jugá con amigos desde cualquier dispositivo." />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-title" content="LUDO Family" />
   <title>LUDO Family</title>
-  <link rel="stylesheet" href="/styles.css?v=41" />
+  <link rel="stylesheet" href="/styles.css?v=46" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;700;800;900&display=swap" rel="stylesheet" />
 </head>
@@ -41,13 +41,17 @@
             <input id="player-name" type="text" maxlength="12" placeholder="Ej: Mary" autocomplete="off" />
 
             <div class="home-actions">
-              <button id="btn-solo" class="btn btn-primary btn-lg">
+              <button id="btn-hotseat" class="btn btn-primary btn-lg" type="button">
+                🏠 Misma PC · 2–4 jugadores
+              </button>
+              <p class="btn-subhint">Todos en este mismo aparato, turnos por turnos</p>
+              <button id="btn-solo" class="btn btn-secondary">
                 ⚡ Jugar solo vs bots
               </button>
-              <button id="btn-create" class="btn btn-secondary">
-                <span class="btn-icon">🎮</span> Crear sala online
+              <button id="btn-create" class="btn btn-ghost">
+                <span class="btn-icon">🌐</span> Crear sala online
               </button>
-              <div class="divider"><span>o unirse</span></div>
+              <div class="divider"><span>o unirse online</span></div>
               <div class="join-row">
                 <input id="join-code" type="text" maxlength="5" placeholder="CÓDIGO" autocomplete="off" class="code-input" />
                 <button id="btn-join" class="btn btn-ghost">Unirse</button>
@@ -103,6 +107,7 @@
             ⚡ Jugar ahora (con 3 bots)
           </button>
           <div class="lobby-or">o armá la sala a mano</div>
+          <button id="btn-add-local" class="btn btn-secondary" type="button" style="display:none">+ Jugador en esta PC</button>
           <button id="btn-add-bot" class="btn btn-ghost">+ Agregar 1 bot</button>
           <button id="btn-start" class="btn btn-secondary" disabled>Iniciar partida</button>
           <button id="btn-leave-lobby" class="btn btn-danger-ghost">Salir</button>
@@ -116,10 +121,14 @@
       <div class="game-shell">
         <header class="game-topbar">
           <div class="topbar-left">
+            <span class="room-mini" id="game-code" title="Código de sala"></span>
+          </div>
+          <div class="topbar-center">
             <span class="brand-mini">LUDO <span class="brand-family">Family</span></span>
-            <span class="room-mini" id="game-code"></span>
           </div>
           <div class="topbar-right">
+            <button id="btn-theme" class="icon-btn" type="button" title="Temática / fondo" aria-label="Cambiar temática">🎨</button>
+            <button id="btn-fullscreen" class="icon-btn" type="button" title="Pantalla completa" aria-label="Pantalla completa">⛶</button>
             <button id="btn-chat-toggle" class="icon-btn" title="Chat">💬</button>
             <button id="btn-pause-menu" class="icon-btn" title="Menú">⏸</button>
           </div>
@@ -183,6 +192,7 @@
         <div class="overlay-card">
           <h3>Menú</h3>
           <button id="btn-resume" class="btn btn-primary">Continuar</button>
+          <button id="btn-theme-menu" class="btn btn-secondary" type="button">🎨 Cambiar temática</button>
           <button id="btn-leave-game" class="btn btn-danger">Abandonar partida</button>
         </div>
       </div>
@@ -198,11 +208,48 @@
       </div>
     </section>
 
+    <!-- Theme / wallpaper picker -->
+    <div id="theme-panel" class="theme-panel hidden" aria-hidden="true">
+      <div class="theme-panel-card" role="dialog" aria-label="Elegir temática">
+        <div class="theme-panel-head">
+          <h3>🎨 Temática</h3>
+          <button type="button" id="btn-theme-close" class="icon-btn" title="Cerrar">✕</button>
+        </div>
+        <p class="theme-panel-hint">Elegí el fondo del juego. El marco del tablero se adapta con un color liso.</p>
+        <div class="theme-grid" id="theme-grid" role="listbox" aria-label="Temáticas">
+          <button type="button" class="theme-card" data-theme="classic" title="Clásico madera">
+            <span class="theme-swatch theme-swatch-classic"></span>
+            <span class="theme-name">Clásico</span>
+          </button>
+          <button type="button" class="theme-card" data-theme="pets" title="Perritos y gatitos">
+            <span class="theme-swatch theme-swatch-pets"></span>
+            <span class="theme-name">🐾 Mascotas</span>
+          </button>
+          <button type="button" class="theme-card" data-theme="football" title="Fútbol">
+            <span class="theme-swatch theme-swatch-football"></span>
+            <span class="theme-name">⚽ Fútbol</span>
+          </button>
+          <button type="button" class="theme-card" data-theme="cars" title="Autos">
+            <span class="theme-swatch theme-swatch-cars"></span>
+            <span class="theme-name">🏎️ Autos</span>
+          </button>
+          <button type="button" class="theme-card" data-theme="music" title="Música">
+            <span class="theme-swatch theme-swatch-music"></span>
+            <span class="theme-name">🎵 Música</span>
+          </button>
+          <button type="button" class="theme-card" data-theme="boardgames" title="Juegos de mesa">
+            <span class="theme-swatch theme-swatch-boardgames"></span>
+            <span class="theme-name">🎲 Mesa</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
     <div id="toast" class="toast hidden"></div>
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="/board.js?v=41"></script>
-  <script src="/app.js?v=41"></script>
+  <script src="/board.js?v=46"></script>
+  <script src="/app.js?v=46"></script>
 </body>
 </html>

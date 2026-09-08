@@ -282,14 +282,33 @@ function renderBoard(container, gameState, options = {}) {
     </linearGradient>
   </defs>`;
 
-  // Outer wood frame
-  svg += `<rect x="0" y="0" width="${full}" height="${full}" rx="22" ry="22" fill="url(#woodGrad)"/>`;
-  svg += `<rect x="3" y="3" width="${full - 6}" height="${full - 6}" rx="19" ry="19" fill="none" stroke="#f6e6c8" stroke-width="2" opacity="0.7"/>`;
-  svg += `<rect x="6" y="6" width="${full - 12}" height="${full - 12}" rx="16" ry="16" fill="none" stroke="#a8783a" stroke-width="1.5" opacity="0.45"/>`;
+  // Outer frame — solid color when theme provides rim (wallpaper themes)
+  const rim = (options && options.rimColor) || (typeof document !== 'undefined' && document.documentElement
+    && getComputedStyle(document.documentElement).getPropertyValue('--board-rim').trim()) || '';
+  const rimHi = (options && options.rimHighlight) || (typeof document !== 'undefined' && document.documentElement
+    && getComputedStyle(document.documentElement).getPropertyValue('--board-rim-hi').trim()) || '';
+  const rimLo = (options && options.rimShadow) || (typeof document !== 'undefined' && document.documentElement
+    && getComputedStyle(document.documentElement).getPropertyValue('--board-rim-lo').trim()) || '';
+  const plate = (options && options.plateColor) || (typeof document !== 'undefined' && document.documentElement
+    && getComputedStyle(document.documentElement).getPropertyValue('--board-plate').trim()) || '#f7f4ee';
 
-  // Playable white board plate
+  if (rim) {
+    svg += `<rect x="0" y="0" width="${full}" height="${full}" rx="22" ry="22" fill="${rim}"/>`;
+    if (rimHi) {
+      svg += `<rect x="3" y="3" width="${full - 6}" height="${full - 6}" rx="19" ry="19" fill="none" stroke="${rimHi}" stroke-width="2" opacity="0.55"/>`;
+    }
+    if (rimLo) {
+      svg += `<rect x="6" y="6" width="${full - 12}" height="${full - 12}" rx="16" ry="16" fill="none" stroke="${rimLo}" stroke-width="1.5" opacity="0.5"/>`;
+    }
+  } else {
+    svg += `<rect x="0" y="0" width="${full}" height="${full}" rx="22" ry="22" fill="url(#woodGrad)"/>`;
+    svg += `<rect x="3" y="3" width="${full - 6}" height="${full - 6}" rx="19" ry="19" fill="none" stroke="#f6e6c8" stroke-width="2" opacity="0.7"/>`;
+    svg += `<rect x="6" y="6" width="${full - 12}" height="${full - 12}" rx="16" ry="16" fill="none" stroke="#a8783a" stroke-width="1.5" opacity="0.45"/>`;
+  }
+
+  // Playable plate
   svg += `<g transform="translate(${pad}, ${pad})">`;
-  svg += `<rect x="0" y="0" width="${size}" height="${size}" rx="6" ry="6" fill="#f7f4ee" filter="url(#boardInset)"/>`;
+  svg += `<rect x="0" y="0" width="${size}" height="${size}" rx="6" ry="6" fill="${plate || '#f7f4ee'}" filter="url(#boardInset)"/>`;
 
   // ---- Helper: raised plastic cell ----
   function cellRect(c, r, fill, stroke, sw) {
