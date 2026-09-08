@@ -53,12 +53,77 @@ const YARD_POSITIONS = {
   yellow: [[1.55, 10.55], [3.45, 10.55], [1.55, 12.45], [3.45, 12.45]]
 };
 
-const FINISH_POSITIONS = {
-  green:  [[6.35, 7.0], [6.7, 6.65], [6.7, 7.35], [7.0, 7.0]],
-  red:    [[7.0, 6.35], [6.65, 6.7], [7.35, 6.7], [7.0, 7.0]],
-  blue:   [[8.65, 7.0], [8.3, 6.65], [8.3, 7.35], [8.0, 7.0]],
-  yellow: [[7.0, 8.65], [6.65, 8.3], [7.35, 8.3], [7.0, 8.0]]
+/**
+ * Finish triangle slots by ARRIVAL ORDER (0=first … 3=fourth), not tokenIndex.
+ *
+ * Layout in "local" triangle coords (tip toward board center, base toward entry):
+ *   slot0 TOP    = near tip (apex toward center) — first token home
+ *   slot1 LEFT   = base-left corner — second
+ *   slot2 CENTER = base-center (aligned with top) — third
+ *   slot3 RIGHT  = base-right corner — fourth
+ * So 2nd, 3rd, 4th form the base row; 1st + 3rd form the vertical axis.
+ *
+ * Each color's triangle in the center 3×3:
+ *   green  left:   apex at center (7.5,7.5), base on left edge x=6
+ *   red    top:    apex at center, base on top edge y=6
+ *   blue   right:  apex at center, base on right edge x=9
+ *   yellow bottom: apex at center, base on bottom edge y=9
+ *
+ * Values are in board cell units (0..15). Tokens are small (~0.22 cell radius
+ * after scale) so they stay strictly inside the triangle with margin.
+ */
+const FINISH_SLOTS = {
+  // green: left triangle — tip toward center (right), base on left
+  // 1st near tip; 2nd/3rd/4th on base (upper / mid / lower) aligned
+  green: [
+    [6.98, 7.50], // 1st TOP (toward center / tip)
+    [6.45, 7.00], // 2nd LEFT (base upper)
+    [6.45, 7.50], // 3rd CENTER (base mid) — vertical with 1st
+    [6.45, 8.00]  // 4th RIGHT (base lower)
+  ],
+  // red: top triangle — tip toward center (down), base on top
+  red: [
+    [7.50, 6.98], // 1st TOP
+    [7.00, 6.45], // 2nd LEFT
+    [7.50, 6.45], // 3rd CENTER
+    [8.00, 6.45]  // 4th RIGHT
+  ],
+  // blue: right triangle — tip toward center (left), base on right
+  blue: [
+    [8.02, 7.50], // 1st TOP
+    [8.55, 7.00], // 2nd LEFT (base upper)
+    [8.55, 7.50], // 3rd CENTER
+    [8.55, 8.00]  // 4th RIGHT (base lower)
+  ],
+  // yellow: bottom triangle — tip toward center (up), base on bottom
+  yellow: [
+    [7.50, 8.02], // 1st TOP
+    [7.00, 8.55], // 2nd LEFT
+    [7.50, 8.55], // 3rd CENTER
+    [8.00, 8.55]  // 4th RIGHT
+  ]
 };
+
+// Back-compat alias
+const FINISH_POSITIONS = FINISH_SLOTS;
+
+/** Map tokenIndex → finish slot (arrival order). Falls back to tokenIndex. */
+function finishSlotIndex(player, tokenIndex) {
+  if (player && Array.isArray(player.finishOrder) && player.finishOrder.length) {
+    const i = player.finishOrder.indexOf(tokenIndex);
+    if (i >= 0) return i;
+    // already finished but not listed? put after known
+    return Math.min(3, player.finishOrder.length);
+  }
+  return tokenIndex;
+}
+
+function finishXY(color, slotIndex, cellSize) {
+  const slots = FINISH_SLOTS[color] || FINISH_SLOTS.green;
+  const i = Math.max(0, Math.min(3, slotIndex | 0));
+  const [c, r] = slots[i];
+  return { x: c * cellSize, y: r * cellSize };
+}
 
 // Safe cells: starts + stars (absolute path indices)
 const STAR_ABS = new Set([0, 8, 13, 21, 26, 34, 39, 47]);
@@ -74,14 +139,14 @@ function cellCenter(col, row, cellSize) {
   };
 }
 
-function posToXY(color, relativePos, tokenIndex, cellSize) {
+function posToXY(color, relativePos, tokenIndex, cellSize, player) {
   if (relativePos < 0) {
     const [c, r] = YARD_POSITIONS[color][tokenIndex];
     return { x: c * cellSize + cellSize / 2, y: r * cellSize + cellSize / 2 };
   }
   if (relativePos >= 56) {
-    const [c, r] = FINISH_POSITIONS[color][tokenIndex];
-    return { x: c * cellSize + cellSize / 2, y: r * cellSize + cellSize / 2 };
+    const slot = finishSlotIndex(player, tokenIndex);
+    return finishXY(color, slot, cellSize);
   }
   if (relativePos >= 51) {
     const idx = relativePos - 51;
@@ -228,6 +293,151 @@ function tokenDiscSVG(col, scale) {
       <circle cx="0" cy="0" r="${(r * 0.96).toFixed(2)}" fill="none" stroke="#fff" stroke-width="${Math.max(0.8, s * 0.035).toFixed(2)}" opacity="0.35"/>
       <circle cx="0" cy="0" r="${r.toFixed(2)}" fill="none" stroke="${dark}" stroke-width="${Math.max(0.7, s * 0.03).toFixed(2)}" opacity="0.55"/>
     </g>`;
+}
+
+
+/**
+ * Layout for multiple tokens sharing one path/home-stretch cell.
+ * 2–3: left → right row
+ * 4: 2×2 like die face 4 (TL, TR, BL, BR)
+ * All offsets stay inside the cell with margin; scale shrinks so discs don't clip.
+ * Returns { dx, dy, scaleMul } relative to cell center; scaleMul multiplies base token scale.
+ */
+function stackLayoutInCell(count, index, cellSize) {
+  const n = Math.max(1, Math.min(4, count | 0));
+  const i = Math.max(0, Math.min(n - 1, index | 0));
+  if (n <= 1) return { dx: 0, dy: 0, scaleMul: 1 };
+
+  // Usable half-size of cell (leave border / gap so discs stay inside)
+  const inset = cellSize * 0.12;
+  const usable = cellSize - inset * 2;
+
+  if (n === 2 || n === 3) {
+    // Horizontal row, centered — discs fully inside cell
+    // tokenDiscSVG radius ≈ scale * 0.48; keep |dx|+r ≤ usable/2
+    const scaleMul = n === 2 ? 0.55 : 0.46;
+    const r = cellSize * scaleMul * 0.48;
+    const gap = cellSize * (n === 2 ? 0.04 : 0.03);
+    let pitch = r * 2 + gap;
+    const maxSpan = usable - r * 2; // outermost centers must stay inset by r
+    if (pitch * (n - 1) > maxSpan) pitch = maxSpan / (n - 1);
+    const totalW = pitch * (n - 1);
+    const dx = -totalW / 2 + i * pitch;
+    const dy = 0;
+    return { dx, dy, scaleMul };
+  }
+
+  // n === 4 → die face 4: 2×2 (TL, TR, BL, BR)
+  const scaleMul = 0.42;
+  const r = cellSize * scaleMul * 0.48;
+  const gap = cellSize * 0.04;
+  let pitch = r * 2 + gap;
+  const maxSpan = usable - r * 2;
+  if (pitch > maxSpan) pitch = maxSpan;
+  const col = i % 2; // 0 left, 1 right
+  const row = i < 2 ? 0 : 1; // 0 top, 1 bottom
+  const dx = (col === 0 ? -1 : 1) * pitch * 0.5;
+  const dy = (row === 0 ? -1 : 1) * pitch * 0.5;
+  return { dx, dy, scaleMul };
+}
+
+
+/**
+ * Gold medal with hanging ribbon (ribbon = house color; medal always gold).
+ * Soft drop shadow for volume. Drawn large in the center of the winner's casa.
+ */
+function drawGoldMedalSVG(cx, cy, size, ribbonColor) {
+  const s = size;
+  const gold1 = '#ffe566';
+  const gold2 = '#f5c518';
+  const gold3 = '#d4a017';
+  const gold4 = '#b8860b';
+  const rib = ribbonColor || '#2e7d32';
+  const ribDark = shadeHex(rib, -0.22);
+  const ribLight = shadeHex(rib, 0.18);
+  let out = '';
+  // Soft volume shadow under whole medal+ribbon
+  out += `<ellipse cx="${(cx + s * 0.04).toFixed(1)}" cy="${(cy + s * 0.72).toFixed(1)}" rx="${(s * 0.55).toFixed(1)}" ry="${(s * 0.16).toFixed(1)}" fill="#000" opacity="0.28"/>`;
+  out += `<ellipse cx="${cx.toFixed(1)}" cy="${(cy + s * 0.08).toFixed(1)}" rx="${(s * 0.48).toFixed(1)}" ry="${(s * 0.14).toFixed(1)}" fill="#000" opacity="0.18"/>`;
+
+  // Ribbon hanging behind / below the disc (V tails)
+  const topY = cy - s * 0.15;
+  const joinY = cy + s * 0.05;
+  // Left ribbon tail
+  out += `<path d="M ${(cx - s * 0.08).toFixed(1)} ${topY.toFixed(1)}
+    L ${(cx - s * 0.42).toFixed(1)} ${(cy + s * 0.95).toFixed(1)}
+    L ${(cx - s * 0.12).toFixed(1)} ${(cy + s * 0.88).toFixed(1)}
+    L ${(cx - s * 0.02).toFixed(1)} ${(joinY + s * 0.12).toFixed(1)}
+    Z" fill="${rib}" stroke="${ribDark}" stroke-width="1.2" stroke-linejoin="round"/>`;
+  // Right ribbon tail
+  out += `<path d="M ${(cx + s * 0.08).toFixed(1)} ${topY.toFixed(1)}
+    L ${(cx + s * 0.42).toFixed(1)} ${(cy + s * 0.95).toFixed(1)}
+    L ${(cx + s * 0.12).toFixed(1)} ${(cy + s * 0.88).toFixed(1)}
+    L ${(cx + s * 0.02).toFixed(1)} ${(joinY + s * 0.12).toFixed(1)}
+    Z" fill="${ribLight}" stroke="${ribDark}" stroke-width="1.2" stroke-linejoin="round"/>`;
+  // Ribbon fold highlight
+  out += `<path d="M ${(cx - s * 0.06).toFixed(1)} ${topY.toFixed(1)}
+    L ${cx.toFixed(1)} ${(cy + s * 0.22).toFixed(1)}
+    L ${(cx + s * 0.06).toFixed(1)} ${topY.toFixed(1)}
+    Z" fill="${ribDark}" opacity="0.35"/>`;
+
+  // Medal disc shadow (contact)
+  out += `<circle cx="${(cx + 1.5).toFixed(1)}" cy="${(cy + 2.5).toFixed(1)}" r="${(s * 0.48).toFixed(1)}" fill="#000" opacity="0.22"/>`;
+
+  // Outer gold ring
+  out += `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${(s * 0.50).toFixed(1)}" fill="${gold3}" stroke="${gold4}" stroke-width="${(s * 0.04).toFixed(1)}"/>`;
+  // Mid ring
+  out += `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${(s * 0.44).toFixed(1)}" fill="${gold2}" stroke="${gold1}" stroke-width="${(s * 0.035).toFixed(1)}"/>`;
+  // Inner disc with radial-ish highlight (layered circles)
+  out += `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${(s * 0.38).toFixed(1)}" fill="${gold2}"/>`;
+  out += `<circle cx="${(cx - s * 0.10).toFixed(1)}" cy="${(cy - s * 0.12).toFixed(1)}" r="${(s * 0.22).toFixed(1)}" fill="${gold1}" opacity="0.75"/>`;
+  out += `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${(s * 0.38).toFixed(1)}" fill="none" stroke="${gold4}" stroke-width="1.2" opacity="0.5"/>`;
+
+  // Beaded outer rim dots
+  for (let a = 0; a < 16; a++) {
+    const ang = (a / 16) * Math.PI * 2 - Math.PI / 2;
+    const bx = cx + Math.cos(ang) * s * 0.47;
+    const by = cy + Math.sin(ang) * s * 0.47;
+    out += `<circle cx="${bx.toFixed(1)}" cy="${by.toFixed(1)}" r="${(s * 0.035).toFixed(1)}" fill="${gold1}" stroke="${gold4}" stroke-width="0.5"/>`;
+  }
+
+  // Center star (5-point)
+  const starR = s * 0.22;
+  const starInner = s * 0.09;
+  let star = '';
+  for (let i = 0; i < 5; i++) {
+    const aOut = -Math.PI / 2 + (i * 2 * Math.PI) / 5;
+    const aIn = aOut + Math.PI / 5;
+    const ox = cx + Math.cos(aOut) * starR;
+    const oy = cy + Math.sin(aOut) * starR;
+    const ix = cx + Math.cos(aIn) * starInner;
+    const iy = cy + Math.sin(aIn) * starInner;
+    star += (i === 0 ? `M ${ox.toFixed(1)} ${oy.toFixed(1)}` : ` L ${ox.toFixed(1)} ${oy.toFixed(1)}`) + ` L ${ix.toFixed(1)} ${iy.toFixed(1)}`;
+  }
+  star += ' Z';
+  out += `<path d="${star}" fill="#fff8e1" stroke="${gold4}" stroke-width="1.2" stroke-linejoin="round"/>`;
+  // Small "1" under star for 1st place
+  const fs = s * 0.28;
+  out += `<text x="${cx.toFixed(1)}" y="${(cy + s * 0.32).toFixed(1)}" text-anchor="middle" font-family="Nunito, system-ui, sans-serif" font-size="${fs.toFixed(1)}" font-weight="900" fill="${gold4}" style="user-select:none">1°</text>`;
+
+  return out;
+}
+
+function shadeHex(hex, amt) {
+  // amt -1..1 darken/lighten
+  let h = String(hex || '#888').replace('#', '');
+  if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+  if (h.length !== 6) return hex || '#888';
+  const n = parseInt(h, 16);
+  let r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  const t = (v) => Math.max(0, Math.min(255, Math.round(v + (amt >= 0 ? (255 - v) * amt : v * amt))));
+  if (amt < 0) {
+    const k = 1 + amt;
+    r = Math.round(r * k); g = Math.round(g * k); b = Math.round(b * k);
+  } else {
+    r = t(r); g = t(g); b = t(b);
+  }
+  return '#' + [r, g, b].map((v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, '0')).join('');
 }
 
 function renderBoard(container, gameState, options = {}) {
@@ -486,7 +696,74 @@ function renderBoard(container, gameState, options = {}) {
   // Light grid lines over path only (subtle)
   svg += `<g stroke="#ddd5c8" stroke-width="0.6" fill="none" opacity="0.35">`;
   // skip — cells already have own borders
-  svg += `</g>`;
+  
+  // ---- 1st-place gold medal in center of winner's house (while match may continue) ----
+  if (gameState && Array.isArray(gameState.winners) && gameState.winners.length) {
+    const firstId = gameState.winners[0];
+    const firstPl = (gameState.players || []).find((p) => p && p.id === firstId);
+    if (firstPl && firstPl.finished >= 4 && firstPl.color) {
+      const yardOrigin = { green: [0, 0], red: [9, 0], blue: [9, 9], yellow: [0, 9] };
+      const [x0, y0] = yardOrigin[firstPl.color] || [0, 0];
+      const cx = (x0 + 3) * cs;
+      const cy = (y0 + 3) * cs;
+      // LARGE medal relative to house nest (~2.4 cells wide)
+      const medalSize = cs * 2.35;
+      const ribCol = (colors[firstPl.color] && colors[firstPl.color].main) || '#2e7d32';
+      svg += `<g class="winner-medal" data-color="${firstPl.color}" data-place="1">`;
+      svg += drawGoldMedalSVG(cx, cy, medalSize, ribCol);
+      svg += `</g>`;
+    }
+  }
+
+svg += `</g>`;
+
+  // ---- Finish count badges (outside playable grid, beside each home yard) ----
+  // Number of tokens that reached meta (0–4), outside the board next to that color's house.
+  function drawFinishCountBadge(color, count, bx, by) {
+    const n = Math.max(0, Math.min(4, Number(count) || 0));
+    const col = colors[color] || colors.green;
+    const R = Math.max(11, cs * 0.38);
+    // Soft shadow
+    svg += `<circle cx="${(bx + 1.2).toFixed(1)}" cy="${(by + 1.6).toFixed(1)}" r="${R.toFixed(1)}" fill="#000" opacity="0.18"/>`;
+    // Disc
+    svg += `<circle cx="${bx.toFixed(1)}" cy="${by.toFixed(1)}" r="${R.toFixed(1)}" fill="${col.main}" stroke="#fff" stroke-width="2.4"/>`;
+    svg += `<circle cx="${bx.toFixed(1)}" cy="${by.toFixed(1)}" r="${(R - 2.2).toFixed(1)}" fill="none" stroke="${col.dark}" stroke-width="1.2" opacity="0.55"/>`;
+    // Number (always visible 0–4 so progress is clear)
+    const fs = Math.max(12, cs * 0.42);
+    svg += `<text x="${bx.toFixed(1)}" y="${(by + fs * 0.35).toFixed(1)}" text-anchor="middle" font-family="Nunito, system-ui, sans-serif" font-size="${fs.toFixed(1)}" font-weight="900" fill="#fff" stroke="${col.dark}" stroke-width="0.6" paint-order="stroke" style="user-select:none">${n}</text>`;
+    // Tiny label
+    const ls = Math.max(6.5, cs * 0.18);
+    svg += `<text x="${bx.toFixed(1)}" y="${(by + R + ls + 2).toFixed(1)}" text-anchor="middle" font-family="Nunito, system-ui, sans-serif" font-size="${ls.toFixed(1)}" font-weight="800" fill="${col.dark}" opacity="0.9" style="user-select:none">META</text>`;
+  }
+
+  // Positions: outside the 15×15 playable area, beside each yard (still on the frame)
+  // green top-left  → left of house
+  // yellow bottom-left → left of house
+  // red top-right → right of house
+  // blue bottom-right → right of house
+  const finishCountByColor = { green: 0, red: 0, blue: 0, yellow: 0 };
+  if (gameState && gameState.players) {
+    gameState.players.forEach((p) => {
+      if (!p || !p.color) return;
+      let n = 0;
+      if (Array.isArray(p.finishOrder) && p.finishOrder.length) n = p.finishOrder.length;
+      else if (typeof p.finished === 'number') n = p.finished;
+      else if (Array.isArray(p.tokens)) n = p.tokens.filter((pos) => pos >= 56).length;
+      finishCountByColor[p.color] = Math.max(0, Math.min(4, n));
+    });
+  }
+  {
+    // Place in pad-local coords: negative X = left of board, >size = right of board
+    const edge = Math.max(10, pad * 0.58);
+    const leftX = -edge;
+    const rightX = size + edge;
+    const topY = 3 * cs;      // middle of top yards (rows 0–6)
+    const botY = 12 * cs;     // middle of bottom yards (rows 9–15)
+    drawFinishCountBadge('green', finishCountByColor.green, leftX, topY);
+    drawFinishCountBadge('yellow', finishCountByColor.yellow, leftX, botY);
+    drawFinishCountBadge('red', finishCountByColor.red, rightX, topY);
+    drawFinishCountBadge('blue', finishCountByColor.blue, rightX, botY);
+  }
 
   // ---- Tokens ----
   if (gameState && gameState.players) {
@@ -497,7 +774,8 @@ function renderBoard(container, gameState, options = {}) {
       });
     });
 
-    const stackCount = {};
+    // Group tokens that share a path/home cell (different players / multi-token cell)
+    const stackBuckets = {};
     tokensToDraw.forEach((t) => {
       let key;
       if (t.pos < 0) key = `yard-${t.player.color}-${t.ti}`;
@@ -508,8 +786,27 @@ function renderBoard(container, gameState, options = {}) {
         key = `main-${(start + t.pos) % 52}`;
       }
       t._stackKey = key;
-      t._stackI = stackCount[key] || 0;
-      stackCount[key] = (stackCount[key] || 0) + 1;
+      if (!stackBuckets[key]) stackBuckets[key] = [];
+      stackBuckets[key].push(t);
+    });
+    // Stable left→right order: by color order, then player id, then token index
+    const COLOR_RANK = { green: 0, red: 1, blue: 2, yellow: 3 };
+    const stackCount = {};
+    Object.keys(stackBuckets).forEach((key) => {
+      const list = stackBuckets[key];
+      list.sort((a, b) => {
+        const ca = COLOR_RANK[a.player.color] ?? 9;
+        const cb = COLOR_RANK[b.player.color] ?? 9;
+        if (ca !== cb) return ca - cb;
+        const ida = String(a.player.id || '');
+        const idb = String(b.player.id || '');
+        if (ida !== idb) return ida < idb ? -1 : 1;
+        return a.ti - b.ti;
+      });
+      list.forEach((t, i) => {
+        t._stackI = i;
+      });
+      stackCount[key] = list.length;
     });
 
     // Draw yard tokens first, then path, then finish (z-order)
@@ -521,21 +818,28 @@ function renderBoard(container, gameState, options = {}) {
     });
 
     tokensToDraw.forEach(({ player, pos, ti, _stackI, _stackKey }) => {
-      let { x, y } = posToXY(player.color, pos, ti, cs);
+      let { x, y } = posToXY(player.color, pos, ti, cs, player);
       const n = stackCount[_stackKey] || 1;
-      if (n > 1 && pos >= 0 && pos < 56) {
-        const ang = (_stackI / n) * Math.PI * 2 - Math.PI / 2;
-        const off = cs * 0.14;
-        x += Math.cos(ang) * off;
-        y += Math.sin(ang) * off;
-      }
       const col = colors[player.color];
       const isSel = (
         options.selectableTokens &&
         player.color === options.currentColor &&
         options.selectableTokens.includes(ti)
       );
-      const scale = cs * (n > 1 && pos >= 0 && pos < 51 ? 0.78 : 0.92);
+      // Scale + layout
+      let scale;
+      if (pos >= 56) {
+        // Finish triangle slots — already dedicated positions
+        scale = cs * 0.48;
+      } else if (n > 1 && pos >= 0 && pos < 56) {
+        // Shared casillero (main path or home stretch): row (2–3) or 2×2 (4)
+        const lay = stackLayoutInCell(n, _stackI, cs);
+        x += lay.dx;
+        y += lay.dy;
+        scale = cs * 0.92 * lay.scaleMul;
+      } else {
+        scale = cs * 0.92;
+      }
       const selClass = isSel ? 'selectable' : '';
       const pulseR = scale * 0.5;
 
@@ -612,8 +916,13 @@ window.LudoBoard = {
   START_ABS,
   BOARD,
   posToXY,
+  finishSlotIndex,
+  finishXY,
+  FINISH_SLOTS,
   buildMoveSteps,
   HOME_STRETCH_CELLS,
   YARD_POSITIONS,
-  cellSizeView: 600 / 15
+  cellSizeView: 600 / 15,
+  stackLayoutInCell,
+  drawGoldMedalSVG
 };

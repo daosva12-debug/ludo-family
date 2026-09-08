@@ -767,11 +767,68 @@
   /** In hotseat, this browser controls every human (non-bot) seat */
   function controlsPlayer(player, room) {
     if (!player || player.isBot) return false;
+    if (isAutoPlaySeat(player, room || state.room)) return false;
     const id = myId();
     if (player.id === id) return true;
     if (isHotseatRoom(room || state.room)) return true;
     return false;
   }
+
+  function roomSeat(playerId, room) {
+    room = room || state.room;
+    if (!room || !room.players) return null;
+    return room.players.find((p) => p.id === playerId) || null;
+  }
+
+  function isAutoPlaySeat(player, room) {
+    if (!player) return false;
+    if (player.autoPlay) return true;
+    const seat = roomSeat(player.id, room);
+    return !!(seat && seat.autoPlay);
+  }
+
+  function isPermanentBotSeat(player, room) {
+    if (!player) return false;
+    const seat = roomSeat(player.id, room);
+    if (seat && seat.permanentBot) return true;
+    // Bot without autoPlay and never human
+    if (player.isBot && !isAutoPlaySeat(player, room)) {
+      if (seat && seat.wasHuman === false) return true;
+      if (String(player.id || '').startsWith('bot-')) return true;
+    }
+    return false;
+  }
+
+  /** Can this browser toggle auto-play for this seat? */
+  function canManageAutoPlay(player, room) {
+    room = room || state.room;
+    if (!player || !room) return false;
+    if (room.status && room.status !== 'playing') return false;
+    if (!room.game || (room.game.status && room.game.status !== 'playing')) return false;
+    if (isPermanentBotSeat(player, room)) return false;
+    const id = myId();
+    // Own seat (online or offline reclaim of auto)
+    if (player.id === id) return true;
+    // Misma PC / hotseat: controller manages every human/auto seat
+    if (isHotseatRoom(room)) return true;
+    const seat = roomSeat(player.id, room);
+    if (seat && seat.isLocal) return true;
+    return false;
+  }
+
+  function toggleAutoPlay(playerId) {
+    if (!playerId || !state.room) return;
+    DiceSFX.unlock && DiceSFX.unlock();
+    socket.emit('player:autoplay', { playerId, toggle: true }, (res) => {
+      if (!res || !res.ok) {
+        toast((res && res.error) || 'No se pudo cambiar auto-juego');
+        return;
+      }
+      toast(res.autoPlay ? '🤖 Auto-juego activado' : '👤 Retomaste el control');
+    });
+  }
+
+
 
   function showTurnPass(name, color) {
     let el = document.getElementById('turn-pass-banner');
@@ -1348,6 +1405,26 @@
     } else if (ev.type === 'move') {
       // room:update usually arrives first with lastMove; this is a backup kick
       if (state.room && state.room.game) maybeAnimateIncomingMove(state.room, ev);
+    } else if (ev.type === 'autoplay' && state.room) {
+      // Flags also arrive via room:update; keep local game players in sync
+      const rid = ev.playerId;
+      if (state.room.players) {
+        const seat = state.room.players.find((p) => p.id === rid);
+        if (seat) {
+          seat.autoPlay = !!ev.autoPlay;
+          seat.isBot = !!ev.autoPlay || !!seat.permanentBot;
+        }
+      }
+      if (state.room.game && state.room.game.players) {
+        const gp = state.room.game.players.find((p) => p.id === rid);
+        if (gp) {
+          gp.autoPlay = !!ev.autoPlay;
+          gp.isBot = !!ev.autoPlay;
+        }
+      }
+      if (typeof renderGame === 'function' && state.room.game) {
+        try { renderGame(state.room); } catch (e) { /* ignore */ }
+      }
     }
   });
 
@@ -2014,7 +2091,7 @@
         let x0;
         let y0;
         if (posToXY) {
-          const startXY = posToXY(player.color, prevPos, lm.tokenIndex, cs);
+          const startXY = posToXY(player.color, prevPos, lm.tokenIndex, cs, player);
           x0 = startXY.x;
           y0 = startXY.y;
           if (el) el.setAttribute('transform', 'translate(' + x0 + ', ' + y0 + ')');
@@ -2024,7 +2101,7 @@
           const pos = steps[i];
           const leaveHome = prevPos === -1;
           if (posToXY && el) {
-            const xy = posToXY(player.color, pos, lm.tokenIndex, cs);
+            const xy = posToXY(player.color, pos, lm.tokenIndex, cs, player);
             await animateSvgTranslate(el, x0, y0, xy.x, xy.y, TOKEN_STEP_MS);
             x0 = xy.x;
             y0 = xy.y;
@@ -2050,7 +2127,7 @@
                 '.token[data-player="' + cap.playerId + '"][data-token="' + cap.tokenIndex + '"]'
               );
               if (!victimEl || !posToXY) return;
-              const fromXY = posToXY(player.color, lm.to, lm.tokenIndex, cs);
+              const fromXY = posToXY(player.color, lm.to, lm.tokenIndex, cs, player);
               const vicPlayer = g.players.find(function (p) { return p.id === cap.playerId; });
               if (!vicPlayer) return;
               const homeXY = posToXY(vicPlayer.color, -1, cap.tokenIndex, cs);
@@ -2111,6 +2188,17 @@
 
   function renderGame() {
     const room = state.room;
+    // Sync auto-play / bot flags from room seats → game players (UI + control)
+    if (room && room.players && room.game && room.game.players) {
+      room.players.forEach((seat) => {
+        const gp = room.game.players.find((p) => p.id === seat.id);
+        if (!gp) return;
+        if (seat.autoPlay != null) gp.autoPlay = !!seat.autoPlay;
+        if (seat.isBot != null) gp.isBot = !!seat.isBot;
+        if (seat.name) gp.name = seat.name;
+      });
+    }
+
     if (!room || !room.game) return;
     const g = room.game;
     const id = myId();
@@ -2213,7 +2301,13 @@
     if (g.lastMove && g.lastMove.type === 'roll' && g.lastMove.playerId === player.id && !state.rolling) face = g.lastMove.value;
     if (g.lastMove && g.lastMove.type === 'move' && g.lastMove.playerId === player.id) face = g.lastMove.dice;
 
-    const stars = '⭐'.repeat(player.finished || 0);
+    let finCount = 0;
+    if (Array.isArray(player.finishOrder) && player.finishOrder.length) finCount = player.finishOrder.length;
+    else if (typeof player.finished === 'number') finCount = player.finished;
+    else if (Array.isArray(player.tokens)) finCount = player.tokens.filter((pos) => pos >= 56).length;
+    finCount = Math.max(0, Math.min(4, finCount));
+    const metaClass = 'meta-count' + (finCount > 0 ? ' has-score' : ' is-zero');
+    const metaBadge = '<div class="' + metaClass + '" title="Fichas en la meta">' + finCount + '</div>';
     let hint = '';
     if (canRollHere) hint = 'TOCÁ PARA TIRAR';
     else if (hasChoice) {
@@ -2236,18 +2330,63 @@
 
     /* Face-on when idle/settled; vertical slot reel while spinning */
     const showVal = face || null;
-    container.innerHTML =
-      '<div class="dice-station color-' + color + (isActive ? ' active-turn' : '') + (hasChoice ? ' has-choice' : '') + '">' +
-      '<div class="sname">' + escapeHtml(player.name) + '</div>' +
+    // Sync autoPlay from room seat onto display player
+    const seat = roomSeat(player.id, state.room);
+    const autoOn = !!(player.autoPlay || (seat && seat.autoPlay) || (player.isBot && seat && seat.autoPlay));
+    const showAutoBtn = canManageAutoPlay(player, state.room) || (autoOn && (player.id === myId() || isHotseatRoom(state.room)));
+    // Permanent bots: no button
+    const allowAutoBtn = showAutoBtn && !isPermanentBotSeat(player, state.room);
+
+    if (autoOn && isActive) hint = 'AUTO…';
+    else if (isActive && player.isBot && !autoOn) hint = hint || 'PENSANDO…';
+
+    // Top houses (green/red): icon BELOW dice card. Bottom houses (yellow/blue): icon ABOVE.
+    const autoPlace = (color === 'green' || color === 'red') ? 'below' : 'above';
+
+    // Icon-only: robot = hand off to bot; person = reclaim manual control
+    const autoIconBot = '<svg class="auto-ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="9" width="10" height="9" rx="2.2" fill="currentColor"/><rect x="9.2" y="5.2" width="5.6" height="3.2" rx="1.2" fill="currentColor"/><circle cx="12" cy="4.2" r="1.15" fill="currentColor"/><circle cx="10.1" cy="13.1" r="1.15" fill="#fff"/><circle cx="13.9" cy="13.1" r="1.15" fill="#fff"/><rect x="9.5" y="16.2" width="5" height="1.2" rx="0.6" fill="#fff" opacity="0.9"/><rect x="4.8" y="11.2" width="2.2" height="4.2" rx="1.1" fill="currentColor"/><rect x="17" y="11.2" width="2.2" height="4.2" rx="1.1" fill="currentColor"/></svg>';
+    const autoIconPerson = '<svg class="auto-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.4" fill="currentColor"/><path d="M6.2 19.2c.4-3.4 2.7-5.2 5.8-5.2s5.4 1.8 5.8 5.2" fill="currentColor"/></svg>';
+
+    let autoBtnHtml = '';
+    if (allowAutoBtn) {
+      autoBtnHtml =
+        '<button type="button" class="auto-play-btn' + (autoOn ? ' is-on' : '') + '" data-auto-player="' + player.id +
+        '" title="' + (autoOn ? 'Retomar control (vos jugás)' : 'Auto-juego (bot tira y mueve)') +
+        '" aria-label="' + (autoOn ? 'Retomar control' : 'Activar auto-juego') + '">' +
+        (autoOn ? autoIconPerson : autoIconBot) +
+        '</button>';
+    } else if (autoOn) {
+      autoBtnHtml = '<div class="auto-play-tag" title="Juega solo">' + autoIconBot + '</div>';
+    }
+
+    const stationInner =
+      '<div class="dice-station color-' + color + (isActive ? ' active-turn' : '') + (hasChoice ? ' has-choice' : '') + (autoOn ? ' auto-on' : '') + '">' +
+      metaBadge +
+      '<div class="sname">' + escapeHtml(String(player.name || '').replace(/\s*\(auto\)\s*$/i, '')) + '</div>' +
       '<button type="button" class="dice-btn' + (canRollHere ? ' can-roll' : '') + '" id="dice-btn-' + player.id + '" data-player-id="' + player.id + '" aria-label="Dado">' +
       buildDiceHTML(showVal, player.id) +
       '</button>' +
       '<div class="turn-badge">TU TURNO</div>' +
-      '<div class="tap-hint' + ((canRollHere || hasChoice) ? ' show' : '') + '">' + hint + '</div>' +
-      '<div class="finished-stars">' + stars + '</div></div>';
+      '<div class="tap-hint' + ((canRollHere || hasChoice || (autoOn && isActive)) ? ' show' : '') + '">' + hint + '</div>' +
+      '</div>';
+
+    container.innerHTML =
+      '<div class="station-stack place-auto-' + autoPlace + (autoOn ? ' is-auto' : '') + '">' +
+      (autoPlace === 'above' ? autoBtnHtml : '') +
+      stationInner +
+      (autoPlace === 'below' ? autoBtnHtml : '') +
+      '</div>';
 
     const btn = container.querySelector('.dice-btn.can-roll');
     if (btn) btn.addEventListener('click', onDiceClick);
+    const ab = container.querySelector('.auto-play-btn');
+    if (ab) {
+      ab.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        toggleAutoPlay(player.id);
+      });
+    }
   }
 
   /** Classic pip layouts (3×3 grid cells, 1-indexed) — matches reference sheet */
@@ -2498,11 +2637,27 @@
   }
 
   function showWinner(g) {
+    if (!ui.winnerOverlay) return;
+    // Only show final overlay when the full match is over (everyone finished)
+    if (g.status !== 'finished') return;
     const winnerId = g.winner || (g.winners && g.winners[0]);
     const winner = g.players.find((p) => p.id === winnerId) || g.players.find((p) => p.finished >= 4);
-    if (!winner || !ui.winnerOverlay) return;
-    if (ui.winnerTitle) ui.winnerTitle.textContent = '¡' + winner.name + ' gana!';
-    if (ui.winnerSub) ui.winnerSub.textContent = 'Todas las fichas llegaron a la meta';
+    if (!winner) return;
+    if (ui.winnerTitle) ui.winnerTitle.textContent = '¡' + winner.name + ' — 1º lugar!';
+    const order = Array.isArray(g.winners) && g.winners.length
+      ? g.winners
+      : g.players.filter((p) => p.finished >= 4).map((p) => p.id);
+    const lines = order.map((id, i) => {
+      const pl = g.players.find((p) => p.id === id);
+      const name = pl ? pl.name : 'Jugador';
+      const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '🏅';
+      return medal + ' ' + (i + 1) + 'º · ' + name;
+    });
+    if (ui.winnerSub) {
+      ui.winnerSub.innerHTML = lines.length
+        ? lines.map((t) => '<div class="podium-line">' + escapeHtml(t) + '</div>').join('')
+        : 'Todas las fichas llegaron a la meta';
+    }
     ui.winnerOverlay.classList.remove('hidden');
   }
 
@@ -2622,7 +2777,7 @@
   // ---- Wallpaper / board themes ----
   const THEME_IDS = ['classic', 'pets', 'football', 'cars', 'music', 'boardgames'];
   const THEME_LABELS = {
-    classic: 'Clásico',
+    classic: 'Clásico · Modo Oscuro',
     pets: 'Mascotas',
     football: 'Fútbol',
     cars: 'Autos',

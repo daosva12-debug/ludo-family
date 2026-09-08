@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-  <meta name="theme-color" content="#c4a574" />
+  <meta name="theme-color" content="#0d0d0d" />
   <meta name="description" content="LUDO Family — Ludo multijugador online. Jugá con amigos desde cualquier dispositivo." />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-title" content="LUDO Family" />
   <title>LUDO Family</title>
-  <link rel="stylesheet" href="/styles.css?v=46" />
+  <link rel="stylesheet" href="/styles.css?v=56" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;700;800;900&display=swap" rel="stylesheet" />
 </head>
@@ -200,9 +200,10 @@
       <!-- Winner overlay -->
       <div id="winner-overlay" class="overlay hidden">
         <div class="overlay-card winner-card">
-          <div class="trophy">🏆</div>
+          <div class="trophy">🥇</div>
           <h3 id="winner-title">¡Ganador!</h3>
-          <p id="winner-sub"></p>
+          <div id="winner-sub" class="winner-sub"></div>
+          <p class="winner-hint">La medalla de oro quedó en la casa del 1º lugar.</p>
           <button id="btn-back-home" class="btn btn-primary">Volver al inicio</button>
         </div>
       </div>
@@ -217,9 +218,9 @@
         </div>
         <p class="theme-panel-hint">Elegí el fondo del juego. El marco del tablero se adapta con un color liso.</p>
         <div class="theme-grid" id="theme-grid" role="listbox" aria-label="Temáticas">
-          <button type="button" class="theme-card" data-theme="classic" title="Clásico madera">
+          <button type="button" class="theme-card" data-theme="classic" title="Clásico · Modo Oscuro">
             <span class="theme-swatch theme-swatch-classic"></span>
-            <span class="theme-name">Clásico</span>
+            <span class="theme-name">🌙 Clásico · Oscuro</span>
           </button>
           <button type="button" class="theme-card" data-theme="pets" title="Perritos y gatitos">
             <span class="theme-swatch theme-swatch-pets"></span>
@@ -249,7 +250,7 @@
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="/board.js?v=46"></script>
-  <script src="/app.js?v=46"></script>
+  <script src="/board.js?v=56"></script>
+  <script src="/app.js?v=56"></script>
 </body>
 </html>
