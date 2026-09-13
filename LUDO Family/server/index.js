@@ -185,6 +185,38 @@ function clearBotTimer(room) {
   }
 }
 
+
+function sortGamePlayersClockwise(g) {
+  if (!g || !Array.isArray(g.players)) return;
+  const cur = g.players[g.currentPlayerIndex];
+  const curId = cur && cur.id;
+  const order = { green: 0, red: 1, blue: 2, yellow: 3 };
+  g.players.sort((a, b) => (order[a.color] ?? 9) - (order[b.color] ?? 9));
+  if (curId) {
+    const idx = g.players.findIndex((p) => p.id === curId);
+    if (idx >= 0) g.currentPlayerIndex = idx;
+  }
+}
+
+/** Inject a new seat into a live match (all tokens in yard). */
+function addSeatToLiveGame(room, seat) {
+  if (!room.game || room.game.status !== 'playing') return;
+  const g = room.game;
+  if (g.players.some((p) => p.id === seat.id)) return;
+  g.players.push({
+    id: seat.id,
+    name: seat.name,
+    color: seat.color,
+    isBot: !!seat.isBot,
+    autoPlay: !!seat.autoPlay,
+    tokens: [-1, -1, -1, -1],
+    finished: 0,
+    finishOrder: []
+  });
+  sortGamePlayersClockwise(g);
+  g.message = `${seat.name} se unió a la partida`;
+}
+
 function scheduleBot(room) {
   clearBotTimer(room);
   if (!room.game || room.game.status !== 'playing') return;
@@ -483,7 +515,9 @@ io.on('connection', (socket) => {
         id: clientId,
         socketId: socket.id,
         name: String(name || (hotseat ? 'Jugador 1' : 'Jugador')).trim().slice(0, 12) || 'Jugador',
-        color: COLOR_ORDER[0],
+        color: (payload && payload.color && COLOR_ORDER.includes(String(payload.color).toLowerCase()))
+          ? String(payload.color).toLowerCase()
+          : COLOR_ORDER[0],
         isBot: false,
         wasHuman: true,
         autoPlay: false,
@@ -528,9 +562,8 @@ io.on('connection', (socket) => {
         if (typeof cb === 'function') cb({ ok: false, error: 'Sala no encontrada' });
         return;
       }
-      if (room.status !== 'lobby') {
-        // Allow rejoin of existing player mid-game via room:rejoin; fresh join only in lobby
-        if (typeof cb === 'function') cb({ ok: false, error: 'La partida ya comenzó. Pedí el enlace de nuevo o esperá la próxima.' });
+      if (room.status !== 'lobby' && room.status !== 'playing') {
+        if (typeof cb === 'function') cb({ ok: false, error: 'No se puede unir a esta sala ahora' });
         return;
       }
 
@@ -576,12 +609,17 @@ io.on('connection', (socket) => {
       };
       room.players.push(player);
       ensureColors(room.players);
+      if (room.status === 'playing' && room.game) {
+        addSeatToLiveGame(room, player);
+        io.to(room.id).emit('game:event', { type: 'player-joined', playerId: player.id, name: player.name });
+      }
       currentRoomId = room.id;
       playerId = clientId;
       socket.data.clientId = clientId;
       socket.join(room.id);
       if (typeof cb === 'function') cb({ ok: true, room: roomPublic(room), playerId: clientId, code: room.code });
       emitRoom(room);
+      if (room.status === 'playing') scheduleBot(room);
     } catch (e) {
       if (typeof cb === 'function') cb({ ok: false, error: e.message });
     }
@@ -592,14 +630,18 @@ io.on('connection', (socket) => {
     if (typeof payload === 'function') { cb = payload; payload = {}; }
     const room = rooms.get(currentRoomId);
     if (!room) return typeof cb === 'function' && cb({ ok: false, error: 'Sin sala. Volvé a crear la sala.' });
-    if (room.hostId !== getActorId(socket, room)) return typeof cb === 'function' && cb({ ok: false, error: 'Solo el anfitrión puede agregar bots' });
-    if (room.status !== 'lobby') return typeof cb === 'function' && cb({ ok: false, error: 'La partida ya empezó' });
+    if (room.hostId !== getActorId(socket, room) && !isRoomController(socket, room)) {
+      return typeof cb === 'function' && cb({ ok: false, error: 'Solo el anfitrión puede agregar bots' });
+    }
+    if (room.status !== 'lobby' && room.status !== 'playing') {
+      return typeof cb === 'function' && cb({ ok: false, error: 'No se puede agregar ahora' });
+    }
     if (room.players.length >= 4) return typeof cb === 'function' && cb({ ok: false, error: 'Máximo 4 jugadores' });
 
     const botNames = ['Bot Ana', 'Bot Leo', 'Bot Sol', 'Bot Max', 'Bot Kim', 'Bot Sam'];
     const used = new Set(room.players.map(p => p.name));
     const name = botNames.find(n => !used.has(n)) || `Bot ${room.players.length + 1}`;
-    room.players.push({
+    const seat = {
       id: 'bot-' + uuidv4().slice(0, 8),
       name,
       color: firstFreeColor(room.players, null),
@@ -608,10 +650,16 @@ io.on('connection', (socket) => {
       wasHuman: false,
       autoPlay: false,
       connected: true
-    });
+    };
+    room.players.push(seat);
     ensureColors(room.players);
+    if (room.status === 'playing' && room.game) {
+      addSeatToLiveGame(room, seat);
+      io.to(room.id).emit('game:event', { type: 'player-joined', playerId: seat.id, name: seat.name });
+    }
     emitRoom(room);
     if (typeof cb === 'function') cb({ ok: true, room: roomPublic(room) });
+    if (room.status === 'playing') scheduleBot(room);
   });
 
   socket.on('room:removePlayer', ({ targetId }, cb) => {
@@ -639,7 +687,9 @@ io.on('connection', (socket) => {
     payload = payload || {};
     const room = rooms.get(currentRoomId);
     if (!room) return typeof cb === 'function' && cb({ ok: false, error: 'Sin sala' });
-    if (room.status !== 'lobby') return typeof cb === 'function' && cb({ ok: false, error: 'La partida ya empezó' });
+    if (room.status !== 'lobby' && room.status !== 'playing') {
+      return typeof cb === 'function' && cb({ ok: false, error: 'No se puede agregar ahora' });
+    }
     if (!isRoomController(socket, room)) {
       return typeof cb === 'function' && cb({ ok: false, error: 'Solo el anfitrión puede sumar jugadores locales' });
     }
@@ -648,34 +698,39 @@ io.on('connection', (socket) => {
     room.hotseat = true;
     if (!room.localControllerId) room.localControllerId = getActorId(socket, room);
 
-    const nHuman = room.players.filter((p) => !p.isBot).length + 1;
+    const nHuman = room.players.filter((p) => !p.isBot && !p.permanentBot).length + 1;
     const nameRaw = payload.name != null ? String(payload.name) : ('Jugador ' + nHuman);
     const name = nameRaw.trim().slice(0, 12) || ('Jugador ' + nHuman);
     let color = payload.color && COLOR_ORDER.includes(String(payload.color).toLowerCase())
       ? String(payload.color).toLowerCase()
       : firstFreeColor(room.players, null);
 
-    // If chosen color taken, pick free
     if (room.players.some((p) => p.color === color)) {
       color = firstFreeColor(room.players, null);
     }
 
     const localId = 'local-' + uuidv4().slice(0, 8);
-    room.players.push({
+    const seat = {
       id: localId,
       socketId: null,
       name,
       color,
       isBot: false,
-        wasHuman: true,
-        autoPlay: false,
-        permanentBot: false,
+      wasHuman: true,
+      autoPlay: false,
+      permanentBot: false,
       connected: true,
       isLocal: true
-    });
+    };
+    room.players.push(seat);
     ensureColors(room.players);
+    if (room.status === 'playing' && room.game) {
+      addSeatToLiveGame(room, seat);
+      io.to(room.id).emit('game:event', { type: 'player-joined', playerId: seat.id, name: seat.name });
+    }
     emitRoom(room);
     if (typeof cb === 'function') cb({ ok: true, room: roomPublic(room), playerId: localId });
+    if (room.status === 'playing') scheduleBot(room);
   });
 
   /** Edit a local (same-PC) seat name/color in lobby */
@@ -684,7 +739,9 @@ io.on('connection', (socket) => {
     payload = payload || {};
     const room = rooms.get(currentRoomId);
     if (!room) return typeof cb === 'function' && cb({ ok: false, error: 'Sin sala' });
-    if (room.status !== 'lobby') return typeof cb === 'function' && cb({ ok: false, error: 'La partida ya empezó' });
+    if (room.status !== 'lobby' && room.status !== 'playing') {
+      return typeof cb === 'function' && cb({ ok: false, error: 'No se puede editar ahora' });
+    }
     if (!isRoomController(socket, room)) {
       return typeof cb === 'function' && cb({ ok: false, error: 'Solo el anfitrión' });
     }
@@ -722,9 +779,11 @@ io.on('connection', (socket) => {
     if (typeof payload === 'function') { cb = payload; payload = {}; }
     const room = rooms.get(currentRoomId);
     if (!room) return typeof cb === 'function' && cb({ ok: false, error: 'Sin sala' });
-    if (room.status !== 'lobby') return typeof cb === 'function' && cb({ ok: false, error: 'La partida ya empezó' });
+    if (room.status !== 'lobby' && room.status !== 'playing') {
+      return typeof cb === 'function' && cb({ ok: false, error: 'No se puede editar ahora' });
+    }
     const player = room.players.find((p) => p.id === getActorId(socket, room));
-    if (!player || player.isBot) {
+    if (!player || (player.isBot && !player.autoPlay)) {
       return typeof cb === 'function' && cb({ ok: false, error: 'No se pudo actualizar el perfil' });
     }
 
@@ -748,8 +807,53 @@ io.on('connection', (socket) => {
     }
 
     ensureColors(room.players);
+    if (room.game && Array.isArray(room.game.players)) {
+      const gp = room.game.players.find((p) => p.id === player.id);
+      if (gp) {
+        gp.name = player.name;
+        const allYard = Array.isArray(gp.tokens) && gp.tokens.every((t) => t === -1);
+        if (room.status === 'lobby' || allYard) {
+          gp.color = player.color;
+          sortGamePlayersClockwise(room.game);
+        }
+      }
+    }
     emitRoom(room);
     if (typeof cb === 'function') cb({ ok: true, room: roomPublic(room) });
+  });
+
+  socket.on('room:restart', (payload, cb) => {
+    if (typeof payload === 'function') { cb = payload; payload = {}; }
+    try {
+      const room = rooms.get(currentRoomId);
+      if (!room) return typeof cb === 'function' && cb({ ok: false, error: 'Sin sala' });
+      if (!isRoomController(socket, room) && room.hostId !== getActorId(socket, room)) {
+        return typeof cb === 'function' && cb({ ok: false, error: 'Solo el anfitrión puede reiniciar' });
+      }
+      if (room.players.length < 2) {
+        return typeof cb === 'function' && cb({ ok: false, error: 'Mínimo 2 jugadores' });
+      }
+      clearBotTimer(room);
+      room.players.forEach((p) => {
+        if (p.autoPlay && !p.permanentBot) {
+          p.autoPlay = false;
+          p.isBot = false;
+          p.name = String(p.name || 'Jugador').replace(/\s*\((auto|bot)\)\s*$/i, '').trim() || 'Jugador';
+        }
+      });
+      ensureColors(room.players);
+      room.game = createInitialState(room.players);
+      room.status = 'playing';
+      const pub = roomPublic(room);
+      emitRoom(room);
+      io.to(room.id).emit('game:started', pub);
+      io.to(room.id).emit('game:event', { type: 'restart' });
+      if (typeof cb === 'function') cb({ ok: true, room: pub });
+      scheduleBot(room);
+    } catch (e) {
+      console.error('restart error', e);
+      if (typeof cb === 'function') cb({ ok: false, error: e.message || 'Error al reiniciar' });
+    }
   });
 
   socket.on('room:start', (payload, cb) => {

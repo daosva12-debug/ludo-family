@@ -38,6 +38,38 @@ const SAFE_CELLS = new Set([
   0, 8, 13, 21, 26, 34, 39, 47  // starts + star positions
 ]);
 
+
+/** Players who have not finished all 4 tokens */
+function activeRacers(state) {
+  return (state.players || []).filter((p) => (p.finished || 0) < TOKENS_PER_PLAYER);
+}
+
+/**
+ * End match when at most one player still has tokens outside meta.
+ * Remaining player is ranked last if needed.
+ */
+function maybeFinishMatch(state) {
+  if (!state || state.status !== 'playing') return false;
+  const racing = activeRacers(state);
+  if (racing.length > 1) return false;
+
+  if (racing.length === 1) {
+    const last = racing[0];
+    if (!Array.isArray(state.winners)) state.winners = [];
+    if (!state.winners.includes(last.id)) state.winners.push(last.id);
+  }
+
+  state.status = 'finished';
+  if (!state.winner && state.winners && state.winners.length) {
+    state.winner = state.winners[0];
+  }
+  const first = state.winner ? getPlayer(state, state.winner) : null;
+  state.message = first
+    ? `¡Fin de la partida! 1º lugar: ${first.name}`
+    : '¡Fin de la partida!';
+  return true;
+}
+
 function createInitialState(players) {
   // players: array of { id, name, color, isBot? }
   // Normalize colors, then sort clockwise on the board:
@@ -188,16 +220,8 @@ function rollDice(state, playerId) {
   state.lastMove = { type: 'roll', playerId, value };
 
   if (value === 6) {
+    // Consecutive 6s allowed — player keeps rolling after each move (no turn loss)
     state.consecutiveSixes += 1;
-    if (state.consecutiveSixes >= 3) {
-      // Three sixes in a row: turn skipped
-      state.message = `${current.name} sacó tres 6 seguidos. Turno perdido.`;
-      state.consecutiveSixes = 0;
-      state.diceRolled = false;
-      state.diceValue = null;
-      advanceTurn(state);
-      return { ok: true, value, skipped: true, state: publicState(state) };
-    }
   } else {
     state.consecutiveSixes = 0;
   }
@@ -329,7 +353,7 @@ function moveToken(state, playerId, tokenIndex) {
     finishedToken
   };
 
-  // Ranking: first to finish all 4 is 1st place, but game continues until EVERYONE finishes
+  // Ranking by arrival; match ends when ≤1 player still racing
   const playerFullyDone = player.finished >= TOKENS_PER_PLAYER;
   if (playerFullyDone) {
     if (!state.winners.includes(playerId)) {
@@ -338,16 +362,7 @@ function moveToken(state, playerId, tokenIndex) {
     const place = state.winners.indexOf(playerId) + 1;
     const placeLabel = place === 1 ? '1º (medalla de oro)' : place === 2 ? '2º' : place === 3 ? '3º' : `${place}º`;
     state.message = `¡${player.name} completó la meta — ${placeLabel}!`;
-
-    const allDone = state.players.every((p) => p.finished >= TOKENS_PER_PLAYER);
-    if (allDone) {
-      state.status = 'finished';
-      state.winner = state.winners[0] || playerId;
-      const first = getPlayer(state, state.winner);
-      state.message = first
-        ? `¡Fin de la partida! 1º lugar: ${first.name}`
-        : '¡Fin de la partida!';
-    }
+    maybeFinishMatch(state);
   }
 
   state.diceRolled = false;
@@ -388,23 +403,16 @@ function moveToken(state, playerId, tokenIndex) {
 function advanceTurn(state) {
   if (state.status !== 'playing') return;
   const n = state.players.length;
-  // If everyone finished, close the match
-  if (n > 0 && state.players.every((p) => p.finished >= TOKENS_PER_PLAYER)) {
-    state.status = 'finished';
-    if (!state.winner && state.winners.length) state.winner = state.winners[0];
-    return;
-  }
+  if (maybeFinishMatch(state)) return;
+
   let next = (state.currentPlayerIndex + 1) % n;
   let guard = 0;
-  // Skip players who already finished all tokens
   while (state.players[next].finished >= TOKENS_PER_PLAYER && guard < n) {
     next = (next + 1) % n;
     guard++;
   }
-  // Safety: if looped all finished, end game
   if (state.players[next].finished >= TOKENS_PER_PLAYER) {
-    state.status = 'finished';
-    if (!state.winner && state.winners.length) state.winner = state.winners[0];
+    maybeFinishMatch(state);
     return;
   }
   state.currentPlayerIndex = next;
@@ -477,5 +485,7 @@ module.exports = {
   publicState,
   botChooseToken,
   toAbsolute,
-  advanceTurn
+  advanceTurn,
+  maybeFinishMatch,
+  activeRacers
 };
