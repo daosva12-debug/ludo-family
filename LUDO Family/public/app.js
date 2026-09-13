@@ -73,6 +73,13 @@
     winnerTitle: $('#winner-title'),
     winnerSub: $('#winner-sub'),
     btnBackHome: $('#btn-back-home'),
+    btnRematch: $('#btn-rematch'),
+    btnRematchMenu: $('#btn-rematch-menu'),
+    btnAddPlayerGame: $('#btn-add-player-game'),
+    addPlayerOverlay: $('#add-player-overlay'),
+    btnAddLocalLive: $('#btn-add-local-live'),
+    btnAddBotLive: $('#btn-add-bot-live'),
+    btnAddPlayerClose: $('#btn-add-player-close'),
     toast: $('#toast'),
     connBanner: null
   };
@@ -816,6 +823,66 @@
     return false;
   }
 
+
+  // ---- Remember player names & colors (localStorage) ----
+  function loadSeatProfiles() {
+    try {
+      const raw = localStorage.getItem('ludoSeatProfiles');
+      if (!raw) return {};
+      const o = JSON.parse(raw);
+      return o && typeof o === 'object' ? o : {};
+    } catch (_) {
+      return {};
+    }
+  }
+  function saveSeatProfiles(map) {
+    try { localStorage.setItem('ludoSeatProfiles', JSON.stringify(map || {})); } catch (_) {}
+  }
+  function rememberSeatProfile(player) {
+    if (!player || !player.id || player.permanentBot) return;
+    if (player.isBot && !player.autoPlay && String(player.id).startsWith('bot-')) return;
+    const map = loadSeatProfiles();
+    const key = String(player.id);
+    const name = String(player.name || '').replace(/\s*\((auto|bot)\)\s*$/i, '').trim();
+    map[key] = {
+      name: name || (map[key] && map[key].name) || 'Jugador',
+      color: player.color || (map[key] && map[key].color) || null,
+      updatedAt: Date.now()
+    };
+    // Also index by color for hotseat convenience
+    if (player.color) {
+      map['color:' + player.color] = { name: map[key].name, color: player.color, id: key, updatedAt: Date.now() };
+    }
+    saveSeatProfiles(map);
+    if (name && player.id === myId()) {
+      try { localStorage.setItem('ludoName', name); } catch (_) {}
+      try { if (player.color) localStorage.setItem('ludoColor', player.color); } catch (_) {}
+    }
+  }
+  function rememberAllSeats(room) {
+    if (!room || !room.players) return;
+    room.players.forEach((p) => rememberSeatProfile(p));
+  }
+  function preferredNameForNewSeat(nHuman) {
+    try {
+      const map = loadSeatProfiles();
+      // Find unused remembered names
+      const used = new Set(((state.room && state.room.players) || []).map((p) => String(p.name || '').toLowerCase()));
+      const entries = Object.keys(map)
+        .filter((k) => k.indexOf('color:') !== 0)
+        .map((k) => map[k])
+        .filter((e) => e && e.name)
+        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      for (const e of entries) {
+        if (!used.has(String(e.name).toLowerCase())) return e.name;
+      }
+    } catch (_) {}
+    return 'Jugador ' + (nHuman || 1);
+  }
+  function preferredColorSaved() {
+    try { return localStorage.getItem('ludoColor') || ''; } catch (_) { return ''; }
+  }
+
   function toggleAutoPlay(playerId) {
     if (!playerId || !state.room) return;
     DiceSFX.unlock && DiceSFX.unlock();
@@ -1364,6 +1431,8 @@
   });
 
   socket.on('room:update', (room) => {
+    if (room) rememberAllSeats(room);
+
     if (!room) return;
     state.room = room;
     if (room.status === 'lobby') {
@@ -1425,6 +1494,13 @@
       if (typeof renderGame === 'function' && state.room.game) {
         try { renderGame(state.room); } catch (e) { /* ignore */ }
       }
+    } else if (ev.type === 'restart') {
+      if (ui.winnerOverlay) ui.winnerOverlay.classList.add('hidden');
+      state.rolling = false;
+      state.moving = false;
+      state.diceValues = {};
+    } else if (ev.type === 'player-joined') {
+      toast((ev.name || 'Jugador') + ' se unió a la partida');
     }
   });
 
@@ -1437,6 +1513,7 @@
   socket.on('chat:message', appendChat);
 
   function enterGame(room, announce) {
+    if (room) rememberAllSeats(room);
     if (room && room.hotseat) state.hotseat = true;
     state.lastHotseatTurnId = null;
     if (!room) return;
@@ -1486,7 +1563,13 @@
 
   async function doCreateRoom() {
     const name = getName();
-    const res = await emitAck('room:create', { name, maxPlayers: 4, clientId: state.clientId }, 8000);
+    const savedColor = preferredColorSaved();
+    const res = await emitAck('room:create', {
+      name,
+      maxPlayers: 4,
+      clientId: state.clientId,
+      color: savedColor || undefined
+    }, 8000);
     if (!res.ok) {
       toast(res.error || 'Error al crear sala');
       return null;
@@ -1553,11 +1636,13 @@
       if (!(await ensureOnline())) return;
       const name = getName() || 'Jugador 1';
       try { localStorage.setItem('ludoName', name); } catch (_) {}
+      const savedColor = preferredColorSaved();
       const res = await emitAck('room:create', {
         name,
         maxPlayers: 4,
         clientId: state.clientId,
-        hotseat: true
+        hotseat: true,
+        color: savedColor || undefined
       }, 8000);
       if (!res.ok) {
         toast(res.error || 'No se pudo crear la sala local');
@@ -1568,7 +1653,7 @@
       state.room = res.room;
       if (res.room) saveSession(res.room, state.playerId);
       // Add a second local seat by default so they can start with 2
-      const add = await emitAck('room:addLocalPlayer', { name: 'Jugador 2' }, 5000);
+      const add = await emitAck('room:addLocalPlayer', { name: preferredNameForNewSeat(2) }, 5000);
       if (add && add.ok && add.room) state.room = add.room;
       showScreen('lobby');
       renderLobby();
@@ -1761,6 +1846,10 @@
             } else {
               res = await emitAck('room:updateLocalPlayer', { targetId: pid, color }, 5000);
             }
+            if (res && res.ok) {
+              try { localStorage.setItem('ludoColor', color); } catch (_) {}
+              if (state.room) rememberAllSeats(state.room);
+            }
             if (res && !res.ok) toast(res.error || 'Color no disponible');
           });
         });
@@ -1854,7 +1943,7 @@
     try {
       if (!(await ensureOnline())) return;
       const n = ((state.room && state.room.players) || []).length + 1;
-      const res = await emitAck('room:addLocalPlayer', { name: 'Jugador ' + n }, 5000);
+      const res = await emitAck('room:addLocalPlayer', { name: preferredNameForNewSeat(n) }, 5000);
       if (!res.ok) toast(res.error || 'No se pudo sumar jugador');
       else {
         state.hotseat = true;
@@ -2638,7 +2727,6 @@
 
   function showWinner(g) {
     if (!ui.winnerOverlay) return;
-    // Only show final overlay when the full match is over (everyone finished)
     if (g.status !== 'finished') return;
     const winnerId = g.winner || (g.winners && g.winners[0]);
     const winner = g.players.find((p) => p.id === winnerId) || g.players.find((p) => p.finished >= 4);
@@ -2647,19 +2735,56 @@
     const order = Array.isArray(g.winners) && g.winners.length
       ? g.winners
       : g.players.filter((p) => p.finished >= 4).map((p) => p.id);
+    // Include any unfinished as last if missing
+    g.players.forEach((p) => {
+      if (order.indexOf(p.id) < 0) order.push(p.id);
+    });
     const lines = order.map((id, i) => {
       const pl = g.players.find((p) => p.id === id);
-      const name = pl ? pl.name : 'Jugador';
+      const name = pl ? String(pl.name || '').replace(/\s*\((auto|bot)\)\s*$/i, '') : 'Jugador';
       const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '🏅';
-      return medal + ' ' + (i + 1) + 'º · ' + name;
+      const fin = pl && pl.finished >= 4 ? '' : (pl && pl.finished != null ? ' · ' + pl.finished + '/4' : '');
+      return medal + ' ' + (i + 1) + 'º · ' + name + fin;
     });
     if (ui.winnerSub) {
       ui.winnerSub.innerHTML = lines.length
         ? lines.map((t) => '<div class="podium-line">' + escapeHtml(t) + '</div>').join('')
-        : 'Todas las fichas llegaron a la meta';
+        : 'Partida finalizada';
     }
+    // Host/hotseat can rematch without leaving room
+    const canRematch = !!(state.room && (
+      state.room.hostId === myId() || isHotseatRoom(state.room)
+    ));
+    if (ui.btnRematch) {
+      ui.btnRematch.style.display = canRematch ? '' : 'none';
+      ui.btnRematch.disabled = !canRematch;
+    }
+    if (state.room) rememberAllSeats(state.room);
     ui.winnerOverlay.classList.remove('hidden');
   }
+
+  async function doRematch() {
+    if (state.busy) return;
+    state.busy = true;
+    try {
+      if (!(await ensureOnline())) return;
+      const res = await emitAck('room:restart', {}, 8000);
+      if (!res || !res.ok) {
+        toast((res && res.error) || 'No se pudo reiniciar');
+        return;
+      }
+      if (ui.winnerOverlay) ui.winnerOverlay.classList.add('hidden');
+      if (ui.menuOverlay) ui.menuOverlay.classList.add('hidden');
+      state.rolling = false;
+      state.moving = false;
+      state.diceValues = {};
+      enterGame(res.room || state.room, false);
+      toast('🔄 Nueva partida — mismos jugadores');
+    } finally {
+      state.busy = false;
+    }
+  }
+
 
   // Menu / chat
   on(ui.btnPause, 'click', () => ui.menuOverlay && ui.menuOverlay.classList.remove('hidden'));
@@ -2681,6 +2806,55 @@
     state.hotseat = false;
     state.lastHotseatTurnId = null;
     showScreen('home');
+  });
+  on(ui.btnRematch, 'click', () => { doRematch(); });
+  on(ui.btnRematchMenu, 'click', () => { doRematch(); });
+  on(ui.btnAddPlayerGame, 'click', () => {
+    if (ui.menuOverlay) ui.menuOverlay.classList.add('hidden');
+    if (ui.addPlayerOverlay) ui.addPlayerOverlay.classList.remove('hidden');
+  });
+  on(ui.btnAddPlayerClose, 'click', () => {
+    if (ui.addPlayerOverlay) ui.addPlayerOverlay.classList.add('hidden');
+  });
+  on(ui.btnAddLocalLive, 'click', async () => {
+    if (state.busy) return;
+    state.busy = true;
+    try {
+      if (!(await ensureOnline())) return;
+      const n = ((state.room && state.room.players) || []).length + 1;
+      const name = preferredNameForNewSeat(n);
+      const res = await emitAck('room:addLocalPlayer', { name }, 5000);
+      if (!res || !res.ok) toast((res && res.error) || 'No se pudo sumar jugador');
+      else {
+        state.hotseat = true;
+        if (res.room) {
+          state.room = res.room;
+          rememberAllSeats(res.room);
+        }
+        if (ui.addPlayerOverlay) ui.addPlayerOverlay.classList.add('hidden');
+        toast('👤 ' + name + ' se unió');
+        renderGame();
+      }
+    } finally {
+      state.busy = false;
+    }
+  });
+  on(ui.btnAddBotLive, 'click', async () => {
+    if (state.busy) return;
+    state.busy = true;
+    try {
+      if (!(await ensureOnline())) return;
+      const res = await emitAck('room:addBot', {}, 5000);
+      if (!res || !res.ok) toast((res && res.error) || 'No se pudo agregar bot');
+      else {
+        if (res.room) state.room = res.room;
+        if (ui.addPlayerOverlay) ui.addPlayerOverlay.classList.add('hidden');
+        toast('🤖 Bot agregado');
+        renderGame();
+      }
+    } finally {
+      state.busy = false;
+    }
   });
   on(ui.btnChatToggle, 'click', () => {
     state.chatOpen = !state.chatOpen;

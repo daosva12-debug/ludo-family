@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-title" content="LUDO Family" />
   <title>LUDO Family</title>
-  <link rel="stylesheet" href="/styles.css?v=56" />
+  <link rel="stylesheet" href="/styles.css?v=57" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;700;800;900&display=swap" rel="stylesheet" />
 </head>
@@ -193,7 +193,20 @@
           <h3>Menú</h3>
           <button id="btn-resume" class="btn btn-primary">Continuar</button>
           <button id="btn-theme-menu" class="btn btn-secondary" type="button">🎨 Cambiar temática</button>
+          <button id="btn-add-player-game" class="btn btn-secondary" type="button">➕ Sumar jugador / bot</button>
+          <button id="btn-rematch-menu" class="btn btn-secondary" type="button">🔄 Reiniciar partida</button>
           <button id="btn-leave-game" class="btn btn-danger">Abandonar partida</button>
+        </div>
+      </div>
+
+      <!-- Mid-game add player sheet -->
+      <div id="add-player-overlay" class="overlay hidden">
+        <div class="overlay-card">
+          <h3>Sumar a la partida</h3>
+          <p class="winner-hint" style="margin-top:0">Entra con las fichas en casa. Máximo 4 jugadores.</p>
+          <button id="btn-add-local-live" class="btn btn-primary" type="button">👤 Jugador en esta PC</button>
+          <button id="btn-add-bot-live" class="btn btn-secondary" type="button">🤖 Agregar bot</button>
+          <button id="btn-add-player-close" class="btn btn-ghost" type="button">Cerrar</button>
         </div>
       </div>
 
@@ -204,7 +217,10 @@
           <h3 id="winner-title">¡Ganador!</h3>
           <div id="winner-sub" class="winner-sub"></div>
           <p class="winner-hint">La medalla de oro quedó en la casa del 1º lugar.</p>
-          <button id="btn-back-home" class="btn btn-primary">Volver al inicio</button>
+          <div class="winner-actions">
+            <button id="btn-rematch" class="btn btn-primary" type="button">🔄 Jugar de nuevo</button>
+            <button id="btn-back-home" class="btn btn-secondary" type="button">Volver al inicio</button>
+          </div>
         </div>
       </div>
     </section>
@@ -250,7 +266,7 @@
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="/board.js?v=56"></script>
-  <script src="/app.js?v=56"></script>
+  <script src="/board.js?v=57"></script>
+  <script src="/app.js?v=57"></script>
 </body>
 </html>
